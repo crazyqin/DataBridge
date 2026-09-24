@@ -1,0 +1,29 @@
+FROM node:22-alpine AS frontend
+WORKDIR /build/frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+FROM maven:3.9.11-eclipse-temurin-21 AS backend
+WORKDIR /build/backend
+COPY backend/ ./
+COPY docker/maven-settings.xml /tmp/maven-settings.xml
+COPY --from=frontend /build/frontend/dist/ src/main/resources/static/
+RUN mvn -s /tmp/maven-settings.xml -q -DskipTests package
+
+FROM eclipse-temurin:21-jre-jammy AS java_runtime
+
+FROM postgres:16
+COPY --from=java_runtime /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="/opt/java/openjdk/bin:${PATH}"
+ENV PGDATA=/var/lib/postgresql/data/pgdata
+RUN useradd -r -M -g postgres -s /usr/sbin/nologin databridge
+WORKDIR /app
+COPY --from=backend /build/backend/target/databridge-0.1.0.jar /app/app.jar
+COPY docker/standalone-entrypoint.sh /usr/local/bin/databridge-entrypoint
+RUN chmod 755 /usr/local/bin/databridge-entrypoint
+VOLUME ["/var/lib/postgresql/data"]
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/databridge-entrypoint"]

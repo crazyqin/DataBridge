@@ -2,7 +2,29 @@
 
 一个单体部署的轻量数据 API 平台。管理员配置外部只读数据源和 `SELECT` SQL，或者直接维护本地数据，然后通过 `/open/**` 发布 GET 或 POST 接口。
 
-## 启动
+## Portainer 单镜像离线部署
+
+导入 `release/databridge-standalone-amd64.tar.gz`。Portainer 中打开 **Images → Import** 上传文件，然后在 **Containers → Add container** 中填写：
+
+| 项目 | 值 |
+| --- | --- |
+| Image | `databridge:standalone-amd64` |
+| Published port | 宿主机 `8080` → 容器 `8080`（宿主机端口可改） |
+| Volume | 建议创建命名卷 `databridge_data`，挂载到 `/var/lib/postgresql/data` |
+| Restart policy | `Unless stopped` |
+
+启动时会在**同一个容器**内运行应用和 PostgreSQL。PostgreSQL 只监听容器内的 `127.0.0.1:5432`，不要发布 5432 端口。数据库密码、AES 密钥和 API Key 首次启动时自动生成并保存在数据卷中；重建容器时必须复用同一个卷，否则数据会丢失。
+
+首次登录账号为 `admin`。在 Portainer 的容器 **Console** 中执行 `cat /dev/shm/databridge-initial-password` 获取随机初始密码，登录后在页面右上角修改。初始密码明文仅保存在容器临时内存目录；如果尚未修改密码就重启容器，系统会重新生成初始密码，请再次从 Console 读取。平台数据库只保存 BCrypt 哈希。需要调用采用 API Key 鉴权的接口时，在容器 Console 中执行 `cat /var/lib/postgresql/data/.app_api_key` 获取自动生成的 Key。也可在创建容器时提供 `ADMIN_USERNAME`、`ADMIN_PASSWORD_HASH`、`APP_API_KEY` 和 `APP_SECRET_KEY` 环境变量；首次启动后密钥以数据卷中的值为准。
+
+源码构建单镜像：
+
+```bash
+docker build --platform linux/amd64 -f Dockerfile.standalone -t databridge:standalone-amd64 .
+docker save databridge:standalone-amd64 | gzip > databridge-standalone-amd64.tar.gz
+```
+
+## Docker Compose 双容器部署
 
 需要 Docker Compose。复制环境变量模板，并生成强随机密钥：
 
