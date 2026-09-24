@@ -1,0 +1,79 @@
+# 数桥 DataBridge
+
+一个单体部署的轻量数据 API 平台。管理员配置外部只读数据源和 `SELECT` SQL，或者直接维护本地数据，然后通过 `/open/**` 发布 GET 或 POST 接口。
+
+## 启动
+
+需要 Docker Compose。复制环境变量模板，并生成强随机密钥：
+
+```bash
+cp .env.example .env
+openssl rand -base64 32  # 填入 APP_SECRET_KEY，解码后必须是 32 字节
+openssl rand -hex 32     # 可用于 APP_API_KEY、DB_PASSWORD
+```
+
+首次启动前还需生成管理员密码的 BCrypt 哈希。Docker 环境可运行 `docker run --rm -it httpd:2.4-alpine htpasswd -nBC 12 admin`，按提示输入密码，然后把输出中冒号后面的哈希填入 `.env` 的 `ADMIN_PASSWORD_HASH`，并保留单引号。编辑好 `.env` 后运行：
+
+```bash
+docker compose up -d --build
+```
+
+管理页面和开放 API 共用 `http://localhost:8080`。用 `ADMIN_USERNAME` 和生成哈希时输入的密码登录；登录后可在页面右上角修改密码。平台数据库仅保存 BCrypt 哈希，浏览器使用服务端会话，不保存管理员密码。生产环境应通过 HTTPS 反向代理访问，并限制管理端网络入口。PostgreSQL 数据保存在 Compose 卷中。
+
+## 创建第一个 API
+
+1. 在 **数据源** 中新增 PostgreSQL 数据源，填入 `jdbc:postgresql://主机:5432/数据库`、专用只读用户名和密码，保存后点击 **测试连接**。容器访问宿主机数据库时，请使用容器可达的主机地址。
+2. 在 **API 管理** 中点击 **新增 API**，填写名称 `客户查询`、编码 `customer_query`、路径 `/open/customer`，选择 **实时查询** 和刚建立的数据源。接口编码是平台内唯一标识，不参与访问地址；留空可按路径自动填写。访问方式可选“公开访问”或“API Key 鉴权”，默认使用 Key。可选填“允许的 User-Agent”，每行一条；精确匹配，末尾 `*` 表示前缀匹配，例如 `MyClient/*`，留空表示不限制。
+3. 填写 SQL `SELECT cust_id, cust_name FROM customer WHERE cust_id = :cust_id`。在请求参数中添加 `cust_id`，类型 `string`，设为必填。设置超时和最大行数，保存配置，点击 **测试 SQL** 并输入 `{"cust_id":"10001"}`。
+4. 启用 API，然后调用：
+
+```bash
+curl -H 'X-API-Key: 你的APP_API_KEY' 'http://localhost:8080/open/customer?cust_id=10001'
+```
+
+成功响应包含 `code`、`message`、`data` 和 `meta`（行数、来源、request_id）。
+POST 接口使用 JSON 请求体传递参数；GET 接口使用查询字符串。接口路径和请求方式的组合必须唯一。
+
+## 三种模式
+
+| 模式 | 数据来源 | 管理方式 |
+| --- | --- | --- |
+| REALTIME | 每次请求执行外部 `SELECT` | 命名参数绑定、只读事务、超时和行数限制 |
+| SNAPSHOT | Cron 定时或手动同步到平台 PostgreSQL | 必填唯一键，原子替换快照；人工排序单独保存 |
+| MANUAL | 平台 PostgreSQL | 定义字段后在“数据维护”增删改 |
+
+SNAPSHOT 在获取、校验全部结果后才开启平台事务。重复唯一键、查询失败或默认禁止的空结果都保留上一份成功快照。同步后仍存在的行保留人工排序；消失的行删除其排序规则；新行排在末尾。**数据维护** 页面可拖动快照行并保存排序。SNAPSHOT 和 MANUAL 的本地等值过滤仅允许 API 配置中的“允许等值过滤”字段。
+
+选择“API Key 鉴权”的接口必须发送 `X-API-Key`；“公开访问”的接口无需该请求头。管理员密码修改接口为 `POST /admin/password`，请求体包含 `currentPassword` 和 `newPassword`，新密码至少 12 位。外部数据库务必使用只授予 `SELECT` 的账号。数据源密码使用环境变量 `APP_SECRET_KEY` 提供的 AES-256-GCM 密钥加密保存；**请稳定保存该密钥，否则已有数据源密码无法解密**。日志不保存完整请求或响应数据。
+
+User-Agent 由调用方设置，可用于客户端兼容性限制，不能当作身份认证；需要认证时仍应选择 API Key。
+
+## 本地开发
+
+需要 Java 21、Maven 3.9、Node.js 22 和 PostgreSQL。设置与 Compose 相同的环境变量及 `DB_URL`（默认 `jdbc:postgresql://localhost:5432/databridge`）。先构建后端，再用以下命令生成初始哈希，填入 `ADMIN_PASSWORD_HASH`，不要将密码明文写进配置或命令历史：
+
+```bash
+cd backend && mvn package -DskipTests && cd ..
+read -rsp '初始管理员密码: ' initial_password; echo
+printf '%s\n' "$initial_password" | java -jar backend/target/databridge-0.1.0.jar --hash-password
+unset initial_password
+```
+
+构建前端并设置 `APP_FRONTEND_DIR=file:/项目绝对路径/frontend/dist/` 后启动后端；管理页面和 API 都在 8080：
+
+```bash
+cd frontend && npm ci && npm run build
+cd ../backend
+APP_FRONTEND_DIR=file:/项目绝对路径/frontend/dist/ java -jar target/databridge-0.1.0.jar
+```
+
+需要热更新前端时，也可运行 `npm run dev`，这时 Vite 的 5173 仅供开发使用，代理 `/admin`、`/auth` 和 `/open` 到 8080。检查构建：
+
+```bash
+cd backend && mvn test
+cd frontend && npm run build
+```
+
+单元测试直接运行。PostgreSQL 集成测试需要单独的测试库；设置 `TEST_DB_URL`、`TEST_DB_USERNAME`、`TEST_DB_PASSWORD` 后运行 `mvn test`，测试会清空该库中的 DataBridge 核心表及 `source_item` 测试表。不要指向生产数据库。
+
+平台表结构由 Flyway 创建。第一版支持 GET、POST 业务接口和单实例调度；部署多个应用副本会使 Cron 任务重复运行。

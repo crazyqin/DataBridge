@@ -1,0 +1,17 @@
+:root { font-family: Inter, "Microsoft YaHei", sans-serif; color: #203148; background: #f3f6fa; }
+* { box-sizing: border-box; } body { margin: 0; } .layout { min-height: 100vh; }
+.sidebar { background: #142235; display: flex; flex-direction: column; }
+.sidebar-brand { height: 68px; display: flex; align-items: center; gap: 8px; padding: 0 24px; color: white; font-size: 22px; font-weight: 700; }
+.sidebar-brand small { font-size: 12px; font-weight: 400; color: #91a7bd; }
+.sidebar .el-menu { border: none; flex: 1; } .sidebar .el-menu-item.is-active { background: #2862c9; }
+.logout { margin: 14px; color: #b7c7d8 !important; }
+.topbar { display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid #e7ecf2; }
+.topbar span { color: #92a0b1; font-size: 13px; } .el-main { padding: 28px; }
+.topbar-actions { display: flex; align-items: center; gap: 12px; }
+.page-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+.page-head h2 { margin: 0; font-size: 22px; } .page-head p { color: #758498; margin: 5px 0 0; font-size: 13px; }
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 15px; }
+.login-wrap { min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg,#142235,#265a97); }
+.login-card { width: 380px; padding: 14px; } .login-card p { color: #8290a2; margin: 0 0 24px; }
+.brand { font-size: 24px; font-weight: bold; }.brand span { color: #6382a8; font-size: 14px; font-weight: 400; }
+.code-editor textarea { font-family: ui-monospace,monospace; } .row-drag { cursor: grab; color: #8998aa; font-size: 20px; }

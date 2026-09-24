@@ -1,0 +1,26 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/databridge}
+    username: ${DB_USERNAME:databridge}
+    password: ${DB_PASSWORD:databridge}
+    hikari:
+      maximum-pool-size: 10
+  flyway:
+    enabled: true
+  web:
+    resources:
+      static-locations: ${APP_FRONTEND_DIR:classpath:/static/}
+server:
+  port: ${PORT:8080}
+  servlet:
+    session:
+      cookie:
+        same-site: lax
+  error:
+    include-message: never
+    include-stacktrace: never
+app:
+  secret-key: ${APP_SECRET_KEY:}
+  api-key: ${APP_API_KEY:}
+  admin-username: ${ADMIN_USERNAME:}
+  admin-password-hash: ${ADMIN_PASSWORD_HASH:}
