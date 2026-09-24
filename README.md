@@ -18,6 +18,10 @@ openssl rand -hex 32     # 可用于 APP_API_KEY、DB_PASSWORD
 docker compose up -d --build
 ```
 
+本项目的 Compose 同时启动应用与 PostgreSQL，两者均使用 `linux/amd64` 镜像；应用镜像名为 `databridge:0.1.0-amd64`，PostgreSQL 数据保存在独立卷中。若机器安装的是旧版独立命令，请把 `docker compose` 换成 `docker-compose`。宿主机 8080 已被占用时，可用 `APP_PORT=18080 docker compose up -d --build`，再访问 `http://localhost:18080`。
+
+离线部署时，可在已构建镜像的机器上执行 `docker save databridge:0.1.0-amd64 postgres:16 | gzip > databridge-amd64-images.tar.gz`，将归档文件、`docker-compose.yml` 和填写好的 `.env` 拷贝到目标机器。目标机器运行 `docker load -i databridge-amd64-images.tar.gz`，再运行 `docker compose up -d --no-build`。不要把包含密钥的 `.env` 提交到 Git。
+
 管理页面和开放 API 共用 `http://localhost:8080`。用 `ADMIN_USERNAME` 和生成哈希时输入的密码登录；登录后可在页面右上角修改密码。平台数据库仅保存 BCrypt 哈希，浏览器使用服务端会话，不保存管理员密码。生产环境应通过 HTTPS 反向代理访问，并限制管理端网络入口。PostgreSQL 数据保存在 Compose 卷中。
 
 ## 创建第一个 API

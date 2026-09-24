@@ -7,11 +7,10 @@ RUN npm run build
 
 FROM maven:3.9.11-eclipse-temurin-21 AS backend
 WORKDIR /build/backend
-COPY backend/pom.xml ./
-RUN mvn -q -DskipTests dependency:go-offline
 COPY backend/ ./
+COPY docker/maven-settings.xml /tmp/maven-settings.xml
 COPY --from=frontend /build/frontend/dist/ src/main/resources/static/
-RUN mvn -q -DskipTests package
+RUN mvn -s /tmp/maven-settings.xml -q -DskipTests package
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app

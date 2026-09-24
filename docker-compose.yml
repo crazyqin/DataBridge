@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16
+    platform: linux/amd64
     restart: unless-stopped
     environment:
       POSTGRES_DB: databridge
@@ -14,13 +15,15 @@ services:
       timeout: 3s
       retries: 20
   app:
+    image: databridge:0.1.0-amd64
+    platform: linux/amd64
     build: .
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "${APP_PORT:-8080}:8080"
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/databridge
       DB_USERNAME: databridge
