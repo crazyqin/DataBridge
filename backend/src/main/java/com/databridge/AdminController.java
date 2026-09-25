@@ -31,11 +31,17 @@ public class AdminController {
   @PostMapping("/apis/{id}/disable") public Map<String,Object> disable(@PathVariable long id) {return apis.enable(id,false);}
   @PostMapping("/apis/{id}/test") public Map<String,Object> testApi(@PathVariable long id,@RequestBody(required=false) Map<String,Object> params) {return apis.test(id,params==null?Map.of():params);}
   @PostMapping("/apis/{id}/sync") public Map<String,Object> sync(@PathVariable long id) {return apis.sync(id);}
-  @GetMapping("/apis/{id}/rows") public List<Map<String,Object>> rows(@PathVariable long id) {return apis.rows(id);}
+  @GetMapping("/apis/{id}/rows") public Object rows(@PathVariable long id,@RequestParam(required=false) Integer page,
+      @RequestParam(required=false) Integer pageSize) {
+    if(page==null && pageSize==null) return apis.rows(id);
+    if(page==null || pageSize==null) throw ApiException.bad("page and pageSize are both required");
+    return apis.pageRows(id,page,pageSize);
+  }
   @PutMapping("/apis/{id}/sort") @ResponseStatus(HttpStatus.NO_CONTENT) public void sort(@PathVariable long id,@RequestBody List<Map<String,Object>> order) {apis.sort(id,order);}
   @DeleteMapping("/apis/{id}/sort") @ResponseStatus(HttpStatus.NO_CONTENT) public void resetSort(@PathVariable long id) {apis.resetSort(id);}
   @PostMapping("/apis/{id}/rows") public Map<String,Object> manualCreate(@PathVariable long id,@RequestBody Map<String,Object> body) {return apis.manualCreate(id,body);}
-  @PutMapping("/apis/{id}/rows/{key}") public Map<String,Object> manualUpdate(@PathVariable long id,@PathVariable String key,@RequestBody Map<String,Object> body) {return apis.manualUpdate(id,key,body);}
+  @PutMapping("/apis/{id}/rows/{key}") public Map<String,Object> manualUpdate(@PathVariable long id,@PathVariable String key,
+      @RequestParam long version,@RequestBody Map<String,Object> body) {return apis.manualUpdate(id,key,version,body);}
   @DeleteMapping("/apis/{id}/rows/{key}") @ResponseStatus(HttpStatus.NO_CONTENT) public void manualDelete(@PathVariable long id,@PathVariable String key) {apis.manualDelete(id,key);}
   @GetMapping("/logs") public List<Map<String,Object>> logs(@RequestParam(required=false) Long apiId,@RequestParam(required=false) Boolean success,
     @RequestParam(required=false) String from,@RequestParam(required=false) String to) {return apis.logs(apiId,success,from,to);}

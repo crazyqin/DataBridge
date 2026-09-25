@@ -68,7 +68,7 @@ stop_processes() {
 }
 trap 'stop_processes; exit 143' TERM INT
 
-docker-entrypoint.sh postgres -c listen_addresses=127.0.0.1 &
+docker-entrypoint.sh postgres -c listen_addresses=127.0.0.1 -c log_min_messages=fatal &
 pg_pid=$!
 for (( attempt=0; attempt<120; attempt++ )); do
   if ! kill -0 "$pg_pid" 2>/dev/null; then

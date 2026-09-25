@@ -2,6 +2,8 @@ package com.databridge;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 public final class RowKeys {
@@ -17,5 +19,22 @@ public final class RowKeys {
       byte[] hash = MessageDigest.getInstance("SHA-256").digest(json.write(identity).getBytes(StandardCharsets.UTF_8));
       return HexFormat.of().formatHex(hash);
     } catch (Exception e) { throw new IllegalStateException(e); }
+  }
+  public static String legacyTimestampKey(Map<String,Object> row,List<String> fields,Set<String> timestampFields,Json json) {
+    var legacy=new LinkedHashMap<String,Object>(row);
+    boolean changed=false;
+    for(String field:fields) {
+      if(!timestampFields.contains(field)) continue;
+      Object value=row.get(field);
+      if(value instanceof String timestamp) {
+        try {
+          String oldFormat;
+          try { oldFormat=LocalDateTime.parse(timestamp).toString(); }
+          catch(DateTimeParseException offsetTime) { oldFormat=java.time.OffsetDateTime.parse(timestamp).toLocalDateTime().toString(); }
+          if(!oldFormat.equals(timestamp)) { legacy.put(field,oldFormat);changed=true; }
+        } catch(DateTimeParseException ignored) { }
+      }
+    }
+    return changed?key(legacy,fields,json):null;
   }
 }

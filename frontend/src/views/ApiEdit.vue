@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, ref, toRaw, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { request } from '../api'
 const props = defineProps<{ api?: any }>()
@@ -13,7 +13,7 @@ const saving = ref(false)
 const testing = ref(false)
 const result = ref<any>(null)
 function reset() {
-  form.value = props.api ? structuredClone(props.api) : { name:'', code:'', path:'/open/', httpMethod:'GET', authMode:'API_KEY', allowedUserAgents:[], dataMode:'REALTIME', enabled:false, paramSchema:[], manualSchema:[], rowKeyFields:[], filterFields:[], timeoutSeconds:10, maxRows:10000, syncCron:'0 */30 * * * *', allowEmptySync:false }
+  form.value = props.api ? structuredClone(toRaw(props.api)) : { name:'', code:'', path:'/open/', httpMethod:'GET', authMode:'API_KEY', allowedUserAgents:[], dataMode:'REALTIME', enabled:false, paramSchema:[], manualSchema:[], rowKeyFields:[], filterFields:[], timeoutSeconds:10, maxRows:10000, syncCron:'0 */30 * * * *', allowEmptySync:false }
   keys.value = (form.value.rowKeyFields || []).join(', ')
   filters.value = (form.value.filterFields || []).join(', ')
   agentRules.value = (form.value.allowedUserAgents || []).join('\n')

@@ -8,6 +8,9 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -20,6 +23,9 @@ public class ApiErrorHandler {
   }
   @ExceptionHandler(Exception.class)
   public ResponseEntity<Map<String,Object>> unexpected(Exception e,HttpServletRequest request) {
+    if(e instanceof MethodArgumentTypeMismatchException || e instanceof HttpMessageNotReadableException
+        || e instanceof MissingServletRequestParameterException || e instanceof MethodArgumentNotValidException)
+      return ResponseEntity.badRequest().body(Map.of("code",40001,"message","invalid request parameter or body","request_id",requestId(request)));
     log.error("request {} failed",requestId(request),e);
     if(e instanceof DataIntegrityViolationException) return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("code",40901,"message","data conflict","request_id",requestId(request)));
     return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code",50000,"message","internal server error","request_id",requestId(request)));

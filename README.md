@@ -70,7 +70,11 @@ POST 接口使用 JSON 请求体传递参数；GET 接口使用查询字符串�
 
 SNAPSHOT 在获取、校验全部结果后才开启平台事务。重复唯一键、查询失败或默认禁止的空结果都保留上一份成功快照。同步后仍存在的行保留人工排序；消失的行删除其排序规则；新行排在末尾。**数据维护** 页面可拖动快照行并保存排序。SNAPSHOT 和 MANUAL 的本地等值过滤仅允许 API 配置中的“允许等值过滤”字段。
 
-选择“API Key 鉴权”的接口必须发送 `X-API-Key`；“公开访问”的接口无需该请求头。管理员密码修改接口为 `POST /admin/password`，请求体包含 `currentPassword` 和 `newPassword`，新密码至少 12 位。外部数据库务必使用只授予 `SELECT` 的账号。数据源密码使用环境变量 `APP_SECRET_KEY` 提供的 AES-256-GCM 密钥加密保存；**请稳定保存该密钥，否则已有数据源密码无法解密**。日志不保存完整请求或响应数据。
+选择“API Key 鉴权”的接口必须发送 `X-API-Key`；“公开访问”的接口无需该请求头。管理员密码修改接口为 `POST /admin/password`，请求体包含 `currentPassword` 和 `newPassword`，新密码至少 12 位且 UTF-8 编码后不超过 72 字节。外部数据库务必使用只授予 `SELECT` 的账号。数据源密码使用环境变量 `APP_SECRET_KEY` 提供的 AES-256-GCM 密钥加密保存；**请稳定保存该密钥，否则已有数据源密码无法解密**。日志不保存完整请求或响应数据。
+
+应用日志仅记录外部 SQL 失败的错误类别与 SQLState。内置 PostgreSQL 的普通错误不输出到容器标准日志，以免数据库异常把参数值写入日志；外部数据库的日志策略仍需在数据源侧配置。
+
+管理 API 配置更新 `PUT /admin/apis/{id}` 必须附带最近一次读取返回的 `configVersion`；旧版本会返回 409，需重新加载配置。手工数据更新 `PUT /admin/apis/{id}/rows/{rowKey}?version={rowVersion}` 同样需要使用管理列表返回的 `rowVersion`，冲突时返回 409。POST 等值过滤可以使用 JSON `null` 查询真实空值。调用日志的 `from`、`to` 参数建议使用带时区的 ISO 8601 时间（例如 `2026-09-25T15:30:00+08:00`）；不带时区时按 UTC 解释。
 
 User-Agent 由调用方设置，可用于客户端兼容性限制，不能当作身份认证；需要认证时仍应选择 API Key。
 

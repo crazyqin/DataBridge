@@ -18,7 +18,7 @@ class CoreUnitTest {
     var sql=new SqlService(null,json);
     assertDoesNotThrow(()->sql.validate("WITH items AS (SELECT id FROM x) SELECT * FROM items"));
     assertDoesNotThrow(()->sql.validate("SELECT 'delete' AS word"));
-    for(String statement:List.of("DELETE FROM x","SELECT * FROM x; DROP TABLE x","WITH a AS (DELETE FROM x RETURNING *) SELECT * FROM a","SELECT * INTO x FROM y","SELECT * FROM x FOR UPDATE"))
+    for(String statement:List.of("DELETE FROM x","SELECT * FROM x; DROP TABLE x","WITH a AS (DELETE FROM x RETURNING *) SELECT * FROM a","SELECT * INTO x FROM y","SELECT * FROM x FOR UPDATE","SELECT $$'$$; SELECT 2; SELECT $$'$$","SELECT 1; SELECT 2"))
       assertThrows(ApiException.class,()->sql.validate(statement));
   }
   @Test void cryptoUsesRandomNonce() {

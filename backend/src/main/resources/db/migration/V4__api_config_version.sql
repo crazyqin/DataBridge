@@ -1,0 +1,1 @@
+ALTER TABLE api_config ADD COLUMN config_version BIGINT NOT NULL DEFAULT 0;

@@ -28,11 +28,14 @@ async function login() {
 async function logout() { await signOut(); signedIn.value = false; username.value = '' }
 async function changePassword() {
   if (passwordForm.value.newPassword.length < 12) { ElMessage.error('新密码至少 12 位'); return }
+  if (new TextEncoder().encode(passwordForm.value.newPassword).length > 72) { ElMessage.error('新密码不能超过 72 字节'); return }
   if (passwordForm.value.newPassword !== passwordForm.value.confirmPassword) { ElMessage.error('两次新密码不一致'); return }
   await request('/admin/password', 'POST', { currentPassword: passwordForm.value.currentPassword, newPassword: passwordForm.value.newPassword })
   passwordDialog.value = false
   passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
-  ElMessage.success('密码已修改')
+  signedIn.value = false
+  username.value = ''
+  ElMessage.success('密码已修改，请重新登录')
 }
 onMounted(async () => {
   window.addEventListener('auth-expired', () => signedIn.value = false)

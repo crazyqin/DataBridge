@@ -1,22 +1,31 @@
 import { ElMessage } from 'element-plus'
 
+async function csrfHeader(): Promise<Record<string, string>> {
+  const response = await fetch('/auth/csrf', { credentials: 'same-origin' })
+  if (!response.ok) throw new Error('无法获取安全令牌')
+  const token: { headerName: string; token: string } = await response.json()
+  return { [token.headerName]: token.token }
+}
+
 export async function signIn(username: string, password: string) {
+  const csrf = await csrfHeader()
   const response = await fetch('/auth/login', {
     method: 'POST', credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrf },
     body: new URLSearchParams({ username, password }),
   })
   if (!response.ok) { ElMessage.error('账号或密码错误'); throw new Error('login failed') }
 }
 
 export async function signOut() {
-  await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' })
+  await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin', headers: await csrfHeader() })
 }
 
 export async function request<T = any>(path: string, method = 'GET', body?: unknown, silent = false): Promise<T> {
+  const csrf = ['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method.toUpperCase()) ? {} : await csrfHeader()
   const response = await fetch(path, {
     method, credentials: 'same-origin',
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+    headers: body === undefined ? csrf : { 'Content-Type': 'application/json', ...csrf },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (response.status === 401) window.dispatchEvent(new Event('auth-expired'))

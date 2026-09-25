@@ -13,6 +13,7 @@ public class DatasourceService {
   private final PlatformRepository repo;
   private final CryptoService crypto;
   private final Map<Long,HikariDataSource> pools = new ConcurrentHashMap<>();
+  private final Map<Long,Object> poolLocks = new ConcurrentHashMap<>();
   public DatasourceService(PlatformRepository repo, CryptoService crypto) { this.repo=repo; this.crypto=crypto; }
   public List<Map<String,Object>> list() { return repo.datasources().stream().map(this::hidePassword).toList(); }
   public Map<String,Object> get(long id) { return hidePassword(repo.datasource(id)); }
@@ -41,22 +42,26 @@ public class DatasourceService {
       id=repo.insert("INSERT INTO datasource(name,db_type,jdbc_url,driver_class,username,password_enc,enabled) VALUES(?,?,?,?,?,?,?)",
         name,type,url,driver,user,crypto.encrypt(password),enabled);
     } else {
-      repo.datasource(id);
-      if (password.isBlank()) repo.jdbc().update("UPDATE datasource SET name=?,db_type=?,jdbc_url=?,driver_class=?,username=?,enabled=?,updated_at=now() WHERE id=?",
-        name,type,url,driver,user,enabled,id);
-      else repo.jdbc().update("UPDATE datasource SET name=?,db_type=?,jdbc_url=?,driver_class=?,username=?,password_enc=?,enabled=?,updated_at=now() WHERE id=?",
-        name,type,url,driver,user,crypto.encrypt(password),enabled,id);
-      close(id);
+      synchronized (poolLock(id)) {
+        repo.datasource(id);
+        if (password.isBlank()) repo.jdbc().update("UPDATE datasource SET name=?,db_type=?,jdbc_url=?,driver_class=?,username=?,enabled=?,updated_at=now() WHERE id=?",
+          name,type,url,driver,user,enabled,id);
+        else repo.jdbc().update("UPDATE datasource SET name=?,db_type=?,jdbc_url=?,driver_class=?,username=?,password_enc=?,enabled=?,updated_at=now() WHERE id=?",
+          name,type,url,driver,user,crypto.encrypt(password),enabled,id);
+        close(id);
+      }
     }
     return get(id);
   }
   public void delete(long id) {
-    try { if (repo.jdbc().update("DELETE FROM datasource WHERE id=?",id)==0) throw ApiException.missing("data source not found"); }
-    catch (DataIntegrityViolationException e) { throw ApiException.conflict("data source is used by an API"); }
-    close(id);
+    synchronized (poolLock(id)) {
+      try { if (repo.jdbc().update("DELETE FROM datasource WHERE id=?",id)==0) throw ApiException.missing("data source not found"); }
+      catch (DataIntegrityViolationException e) { throw ApiException.conflict("data source is used by an API"); }
+      close(id);
+    }
   }
   public HikariDataSource pool(long id) {
-    return pools.computeIfAbsent(id, key -> {
+    synchronized (poolLock(id)) { return pools.computeIfAbsent(id, key -> {
       Map<String,Object> row=repo.datasource(key);
       if (!Boolean.TRUE.equals(row.get("enabled"))) throw ApiException.bad("data source is disabled");
       var config=new HikariConfig();
@@ -67,8 +72,9 @@ public class DatasourceService {
       config.setMaximumPoolSize(3); config.setMinimumIdle(0); config.setConnectionTimeout(5000);
       config.setPoolName("source-"+key);
       return new HikariDataSource(config);
-    });
+    }); }
   }
+  private Object poolLock(long id) { return poolLocks.computeIfAbsent(id, ignored -> new Object()); }
   public Map<String,Object> test(long id) {
     long start=System.nanoTime();
     try (Connection connection=pool(id).getConnection()) {
