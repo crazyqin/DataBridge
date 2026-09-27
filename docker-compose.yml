@@ -1,37 +1,14 @@
 services:
-  postgres:
-    image: postgres:16
-    command: ["postgres", "-c", "log_min_messages=fatal"]
-    platform: linux/amd64
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: databridge
-      POSTGRES_USER: databridge
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U databridge -d databridge"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-  app:
-    image: databridge:0.1.0-amd64
-    platform: linux/amd64
+  databridge:
+    image: databridge:1.0.0
     build: .
+    platform: linux/amd64
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
     ports:
       - "${APP_PORT:-8080}:8080"
     environment:
-      DB_URL: jdbc:postgresql://postgres:5432/databridge
-      DB_USERNAME: databridge
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
-      APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
-      APP_API_KEY: ${APP_API_KEY:?Set APP_API_KEY in .env}
-      ADMIN_USERNAME: ${ADMIN_USERNAME:?Set ADMIN_USERNAME in .env}
-      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - databridge_data:/data
 volumes:
-  postgres_data:
+  databridge_data:

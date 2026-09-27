@@ -1,1 +1,0 @@
-ALTER TABLE api_data_row ADD COLUMN row_version BIGINT NOT NULL DEFAULT 0;

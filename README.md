@@ -1,109 +1,177 @@
 # 数桥 DataBridge
 
-一个单体部署的轻量数据 API 平台。管理员配置外部只读数据源和 `SELECT` SQL，或者直接维护本地数据，然后通过 `/open/**` 发布 GET 或 POST 接口。
+轻量的数据 API 平台。配置 PostgreSQL 数据源和一条 `SELECT`，或者直接在页面上维护数据，就能以 `/open/**` 发布 GET / POST 接口。
 
-## Portainer 单镜像离线部署
+- **一个进程、一个数据卷**：Node.js 运行服务，平台数据存在内嵌的 SQLite，不需要额外数据库。
+- **三种数据模式**：实时查询、定时同步快照、手工维护。
+- **数据不失真**：大整数、`numeric` 精度、时间的小数秒和时区都原样输出。
 
-导入 `release/databridge-standalone-amd64.tar.gz`。Portainer 中打开 **Images → Import** 上传文件，然后在 **Containers → Add container** 中填写：
+## 部署
 
-| 项目 | 值 |
-| --- | --- |
-| Image | `databridge:standalone-amd64` |
-| Published port | 宿主机 `8080` → 容器 `8080`（宿主机端口可改） |
-| Volume | 建议创建命名卷 `databridge_data`，挂载到 `/var/lib/postgresql/data` |
-| Restart policy | `Unless stopped` |
-
-启动时会在**同一个容器**内运行应用和 PostgreSQL。PostgreSQL 只监听容器内的 `127.0.0.1:5432`，不要发布 5432 端口。数据库密码、AES 密钥和 API Key 首次启动时自动生成并保存在数据卷中；重建容器时必须复用同一个卷，否则数据会丢失。
-
-首次登录账号为 `admin`。在 Portainer 的容器 **Console** 中执行 `cat /dev/shm/databridge-initial-password` 获取随机初始密码，登录后在页面右上角修改。初始密码明文仅保存在容器临时内存目录；如果尚未修改密码就重启容器，系统会重新生成初始密码，请再次从 Console 读取。平台数据库只保存 BCrypt 哈希。需要调用采用 API Key 鉴权的接口时，在容器 Console 中执行 `cat /var/lib/postgresql/data/.app_api_key` 获取自动生成的 Key。也可在创建容器时提供 `ADMIN_USERNAME`、`ADMIN_PASSWORD_HASH`、`APP_API_KEY` 和 `APP_SECRET_KEY` 环境变量；首次启动后密钥以数据卷中的值为准。
-
-源码构建单镜像：
-
-```bash
-docker build --platform linux/amd64 -f Dockerfile.standalone -t databridge:standalone-amd64 .
-docker save databridge:standalone-amd64 | gzip > databridge-standalone-amd64.tar.gz
-```
-
-## Docker Compose 双容器部署
-
-需要 Docker Compose。复制环境变量模板，并生成强随机密钥：
-
-```bash
-cp .env.example .env
-openssl rand -base64 32  # 填入 APP_SECRET_KEY，解码后必须是 32 字节
-openssl rand -hex 32     # 可用于 APP_API_KEY、DB_PASSWORD
-```
-
-首次启动前还需生成管理员密码的 BCrypt 哈希。Docker 环境可运行 `docker run --rm -it httpd:2.4-alpine htpasswd -nBC 12 admin`，按提示输入密码，然后把输出中冒号后面的哈希填入 `.env` 的 `ADMIN_PASSWORD_HASH`，并保留单引号。编辑好 `.env` 后运行：
+### Docker Compose
 
 ```bash
 docker compose up -d --build
 ```
 
-本项目的 Compose 同时启动应用与 PostgreSQL，两者均使用 `linux/amd64` 镜像；应用镜像名为 `databridge:0.1.0-amd64`，PostgreSQL 数据保存在独立卷中。若机器安装的是旧版独立命令，请把 `docker compose` 换成 `docker-compose`。宿主机 8080 已被占用时，可用 `APP_PORT=18080 docker compose up -d --build`，再访问 `http://localhost:18080`。
+访问 `http://localhost:8080`。端口被占用时可用 `APP_PORT=18080 docker compose up -d --build`。
 
-离线部署时，可在已构建镜像的机器上执行 `docker save databridge:0.1.0-amd64 postgres:16 | gzip > databridge-amd64-images.tar.gz`，将归档文件、`docker-compose.yml` 和填写好的 `.env` 拷贝到目标机器。目标机器运行 `docker load -i databridge-amd64-images.tar.gz`，再运行 `docker compose up -d --no-build`。不要把包含密钥的 `.env` 提交到 Git。
+### Portainer / 离线部署
 
-管理页面和开放 API 共用 `http://localhost:8080`。用 `ADMIN_USERNAME` 和生成哈希时输入的密码登录；登录后可在页面右上角修改密码。平台数据库仅保存 BCrypt 哈希，浏览器使用服务端会话，不保存管理员密码。生产环境应通过 HTTPS 反向代理访问，并限制管理端网络入口。PostgreSQL 数据保存在 Compose 卷中。
-
-## 创建第一个 API
-
-1. 在 **数据源** 中新增 PostgreSQL 数据源，填入 `jdbc:postgresql://主机:5432/数据库`、专用只读用户名和密码，保存后点击 **测试连接**。容器访问宿主机数据库时，请使用容器可达的主机地址。
-2. 在 **API 管理** 中点击 **新增 API**，填写名称 `客户查询`、编码 `customer_query`、路径 `/open/customer`，选择 **实时查询** 和刚建立的数据源。接口编码是平台内唯一标识，不参与访问地址；留空可按路径自动填写。访问方式可选“公开访问”或“API Key 鉴权”，默认使用 Key。可选填“允许的 User-Agent”，每行一条；精确匹配，末尾 `*` 表示前缀匹配，例如 `MyClient/*`，留空表示不限制。
-3. 填写 SQL `SELECT cust_id, cust_name FROM customer WHERE cust_id = :cust_id`。在请求参数中添加 `cust_id`，类型 `string`，设为必填。设置超时和最大行数，保存配置，点击 **测试 SQL** 并输入 `{"cust_id":"10001"}`。
-4. 启用 API，然后调用：
+在能联网的机器上构建并导出镜像：
 
 ```bash
-curl -H 'X-API-Key: 你的APP_API_KEY' 'http://localhost:8080/open/customer?cust_id=10001'
+docker build --platform linux/amd64 -t databridge:1.0.0 .
+docker save databridge:1.0.0 | gzip > databridge-1.0.0-amd64.tar.gz
 ```
 
-成功响应包含 `code`、`message`、`data` 和 `meta`（行数、来源、request_id）。
-POST 接口使用 JSON 请求体传递参数；GET 接口使用查询字符串。接口路径和请求方式的组合必须唯一。
+在 Portainer 的 **Images → Import** 中上传该文件，然后在 **Containers → Add container** 中填写：
 
-## 三种模式
+| 项目 | 值 |
+| --- | --- |
+| Image | `databridge:1.0.0` |
+| Port | 宿主机 `8080` → 容器 `8080` |
+| Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
+| Env | `TZ=Asia/Shanghai` |
+| Restart policy | `Unless stopped` |
 
-| 模式 | 数据来源 | 管理方式 |
+### 首次登录
+
+账号是 `admin`。首次启动时会生成随机密码，在容器控制台执行：
+
+```bash
+cat /data/initial-admin-password
+```
+
+登录后在右上角修改密码，修改后这个文件会自动删除。也可以在首次启动前设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 环境变量来指定初始账号。
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| REALTIME | 每次请求执行外部 `SELECT` | 命名参数绑定、只读事务、超时和行数限制 |
-| SNAPSHOT | Cron 定时或手动同步到平台 PostgreSQL | 必填唯一键，原子替换快照；人工排序单独保存 |
-| MANUAL | 平台 PostgreSQL | 定义字段后在“数据维护”增删改 |
+| `TZ` | 系统时区 | 用于 Cron 调度，也是数据源会话的时区 |
+| `PORT` | `8080` | 监听端口 |
+| `DATA_DIR` | `./data`（镜像内为 `/data`） | SQLite 数据库、密钥和初始密码所在目录 |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / 随机 | 只在首次启动时使用 |
+| `APP_SECRET_KEY` | 自动生成到 `DATA_DIR/secret.key` | 加密数据源密码的 AES-256 密钥，Base64 编码的 32 字节 |
+| `TRUST_PROXY` | `false` | 位于反向代理之后时设为 `true`：用 `X-Forwarded-For` 做登录限流，按 `X-Forwarded-Proto` 设置 Secure Cookie 和 HSTS |
+| `COOKIE_SECURE` | `auto` | 设为 `true` 或 `false` 时，强制开启或关闭 Secure Cookie |
+| `LOG_RETENTION_DAYS` | `30` | 调用日志保留天数 |
+| `MAX_CONCURRENT_QUERIES` | `20` | 同时执行的实时查询上限，超出返回 503 |
 
-SNAPSHOT 在获取、校验全部结果后才开启平台事务。重复唯一键、查询失败或默认禁止的空结果都保留上一份成功快照。同步后仍存在的行保留人工排序；消失的行删除其排序规则；新行排在末尾。**数据维护** 页面可拖动快照行并保存排序。SNAPSHOT 和 MANUAL 的本地等值过滤仅允许 API 配置中的“允许等值过滤”字段。
+## 创建第一个接口
 
-选择“API Key 鉴权”的接口必须发送 `X-API-Key`；“公开访问”的接口无需该请求头。管理员密码修改接口为 `POST /admin/password`，请求体包含 `currentPassword` 和 `newPassword`，新密码至少 12 位且 UTF-8 编码后不超过 72 字节。外部数据库务必使用只授予 `SELECT` 的账号。数据源密码使用环境变量 `APP_SECRET_KEY` 提供的 AES-256-GCM 密钥加密保存；**请稳定保存该密钥，否则已有数据源密码无法解密**。日志不保存完整请求或响应数据。
+1. **数据源**：新增 PostgreSQL 数据源，填写主机、端口、数据库和一个**只授予 SELECT 权限**的账号，然后点击「测试连接」。
+2. **API Key**：为调用方创建一个 Key。Key 只显示一次，请立即保存。每个调用方可以单独创建，也可以单独吊销。
+3. **API 管理 → 新增 API**：
+   - 路径填 `/open/customer`，请求方式选 GET，数据模式选「实时查询」。
+   - SQL 填 `SELECT cust_id, cust_name FROM customer WHERE cust_id = :cust_id`。
+   - 添加请求参数 `cust_id`，类型 `string`，设为必填。
+   - 在「测试当前 SQL」中输入 `{"cust_id": "10001"}` 并执行。测试直接使用表单中的内容，不需要先保存。
+   - 打开「启用接口」，然后保存。
+4. 调用：
 
-应用日志仅记录外部 SQL 失败的错误类别与 SQLState。内置 PostgreSQL 的普通错误不输出到容器标准日志，以免数据库异常把参数值写入日志；外部数据库的日志策略仍需在数据源侧配置。
+```bash
+curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001'
+```
 
-管理 API 配置更新 `PUT /admin/apis/{id}` 必须附带最近一次读取返回的 `configVersion`；旧版本会返回 409，需重新加载配置。手工数据更新 `PUT /admin/apis/{id}/rows/{rowKey}?version={rowVersion}` 同样需要使用管理列表返回的 `rowVersion`，冲突时返回 409。POST 等值过滤可以使用 JSON `null` 查询真实空值。调用日志的 `from`、`to` 参数建议使用带时区的 ISO 8601 时间（例如 `2026-09-25T15:30:00+08:00`）；不带时区时按 UTC 解释。
+```json
+{"code":0,"message":"success","data":[{"cust_id":"10001","cust_name":"张三"}],
+ "meta":{"count":1,"source":"REALTIME","request_id":"…"}}
+```
 
-User-Agent 由调用方设置，可用于客户端兼容性限制，不能当作身份认证；需要认证时仍应选择 API Key。
+出错时返回相应的 HTTP 状态码，响应体为 `{"code": 40001, "message": "…", "request_id": "…"}`。其中 `request_id` 与响应头 `X-Request-ID` 一致，也会记录在调用日志中。
+
+## 接口规则
+
+**参数**：GET 接口从查询字符串读取参数，POST 接口从 JSON 请求体读取参数。未声明的参数会被拒绝（400）。SQL 中用 `:name` 引用参数，每个参数都必须声明类型；保存配置时会检查 SQL 与参数声明是否一一对应。
+
+**类型**：可用的字段类型有 `string`、`integer`（64 位）、`decimal`、`boolean`、`date`（`YYYY-MM-DD`）、`datetime`。
+- `datetime` 带时区偏移时，会换算成 UTC 进行比较。
+- `datetime` 不带时区偏移时，按 `TZ` 解释。
+
+**输出**：
+- `int8` 和 `numeric` 按数据库中的原始数字输出，例如 `9007199254740993`、`1.50`。
+- 时间按 ISO 8601 格式输出，并保留小数秒和时区，例如 `2026-09-25T10:00:00.5+08:00`、`10:20:30.123456`。
+- 数组中的元素遵守同样的规则。`json`/`jsonb` 输出为 JSON 结构，`bytea` 输出为 Base64 字符串。
+
+**只读**：
+- 只接受一条以 `SELECT` 或 `WITH` 开头的语句。
+- 语句在 `READ ONLY` 事务中执行，包含写入的 CTE 等写操作会被数据库拒绝。
+- 有语句超时和最大行数限制，超出最大行数时返回 422。
+
+## 三种数据模式
+
+| 模式 | 数据来源 | 说明 |
+| --- | --- | --- |
+| 实时查询 | 每次请求都执行 SQL | 参数按声明的类型绑定 |
+| 定时同步 | 按 Cron 或手动同步到平台 | 需要设置唯一键；数据可以拖动排序 |
+| 手工维护 | 在「数据维护」页面增删改 | 按字段定义校验数据 |
+
+**定时同步**：Cron 有 6 个字段，依次为秒、分、时、日、月、周，例如 `0 */30 * * * *`。一次同步要取回并校验全部结果后才会写入，写入是原子替换。以下情况都会保留上一次的快照：
+- 查询失败，或结果超过最大行数；
+- 唯一键重复（数值按大小比较，`1.0` 和 `1.00` 视为重复）；
+- 结果为空，且没有开启「空结果覆盖」；
+- 同步期间 API 或数据源的配置发生了变化。
+
+拖动调整过的顺序会在后续同步中保留，新出现的行排在末尾。
+
+**过滤**：定时同步和手工维护的接口，可以按「允许过滤」中列出的字段做等值过滤，这些字段需要先在字段定义中声明类型。
+- 比较按字段类型进行，所以 `price=1.5` 能匹配存储的 `1.50`。
+- POST 请求中传 JSON `null`，可以匹配空值。
+
+**并发保护**：
+- API 配置、数据源和手工记录都带有版本号，用过期的页面保存会返回 409，需要刷新后重试。
+- 修改手工维护模式的字段定义时，已有记录会按新的类型转换，并递增版本号；如果有记录无法转换，保存会被拒绝。
+- 切换数据模式会删除该 API 已有的本地数据，页面会先要求确认。
+
+## 安全
+
+- 数据源密码用 AES-256-GCM 加密后存储。**`secret.key` 丢失后，已保存的数据源密码无法解密**；如果数据库还在而密钥缺失，服务会拒绝启动。
+- 管理员密码用 scrypt 哈希存储。修改密码后，该账号的所有会话都会失效。登录失败次数有限制。
+- 管理端使用 `SameSite=Strict` 的会话 Cookie，写操作还要求带 `X-Requested-With` 请求头，用来防御 CSRF。
+- API Key 只保存 SHA-256 哈希，页面上只显示前缀。
+- User-Agent 限制只能用于客户端兼容性控制，不能代替 API Key。
+- 调用日志只记录结果、耗时和错误摘要。数据库返回的错误详情不会出现在开放接口的响应或日志中，只在管理端的测试和同步状态里显示。
+- 生产环境请通过 HTTPS 反向代理访问，并设置 `TRUST_PROXY=true`。
+
+## 备份与恢复
+
+所有状态都在数据卷中：`databridge.db`（以及运行时产生的 `-wal`、`-shm` 文件）和 `secret.key`。备份时先停止容器，再打包整个卷，**必须包含 `secret.key`**：
+
+```bash
+docker compose stop
+docker run --rm -v databridge_data:/data -v "$PWD":/backup alpine tar czf /backup/databridge-backup.tgz -C /data .
+docker compose start
+```
+
+恢复时把归档解压回同名的卷即可。
 
 ## 本地开发
 
-需要 Java 21、Maven 3.9、Node.js 22 和 PostgreSQL。设置与 Compose 相同的环境变量及 `DB_URL`（默认 `jdbc:postgresql://localhost:5432/databridge`）。先构建后端，再用以下命令生成初始哈希，填入 `ADMIN_PASSWORD_HASH`，不要将密码明文写进配置或命令历史：
+需要 Node.js 22.18 或更高版本。服务端是 TypeScript，由 Node 直接运行，不需要编译。
 
 ```bash
-cd backend && mvn package -DskipTests && cd ..
-read -rsp '初始管理员密码: ' initial_password; echo
-printf '%s\n' "$initial_password" | java -jar backend/target/databridge-0.1.0.jar --hash-password
-unset initial_password
+npm ci
+npm run build            # 构建管理页面到 web/dist
+npm run dev              # 启动服务（8080），代码修改后自动重启
+npm run dev:web          # 可选：Vite 热更新页面（5173），请求代理到 8080
+npm run check            # 类型检查
+npm test                 # 单元测试
+TEST_PG_URL=postgres://user:pass@127.0.0.1:5432/db npm test   # 加上集成测试
 ```
 
-构建前端并设置 `APP_FRONTEND_DIR=file:/项目绝对路径/frontend/dist/` 后启动后端；管理页面和 API 都在 8080：
+集成测试会在目标库中创建并删除 `databridge_test` schema，请使用一次性的测试库。
 
-```bash
-cd frontend && npm ci && npm run build
-cd ../backend
-APP_FRONTEND_DIR=file:/项目绝对路径/frontend/dist/ java -jar target/databridge-0.1.0.jar
+目录结构：
+
+```
+server/   服务端：app.ts 路由，apis.ts 接口与同步，sources.ts 数据源，query.ts 执行 SQL，sql.ts 参数解析，values.ts 类型转换
+web/      管理页面（Vue 3 + Element Plus）
+test/     node:test 测试
 ```
 
-需要热更新前端时，也可运行 `npm run dev`，这时 Vite 的 5173 仅供开发使用，代理 `/admin`、`/auth` 和 `/open` 到 8080。检查构建：
+## 限制
 
-```bash
-cd backend && mvn test
-cd frontend && npm run build
-```
-
-单元测试直接运行。PostgreSQL 集成测试需要单独的测试库；设置 `TEST_DB_URL`、`TEST_DB_USERNAME`、`TEST_DB_PASSWORD` 后运行 `mvn test`，测试会清空该库中的 DataBridge 核心表及 `source_item` 测试表。不要指向生产数据库。
-
-平台表结构由 Flyway 创建。第一版支持 GET、POST 业务接口和单实例调度；部署多个应用副本会使 Cron 任务重复运行。
+- 外部数据源只支持 PostgreSQL。
+- 只支持单实例部署：定时同步在进程内调度，会话也保存在内存中，重启服务后需要重新登录。

@@ -1,9 +1,0 @@
-CREATE TABLE admin_account (
-  username VARCHAR(100) PRIMARY KEY,
-  password_hash VARCHAR(100) NOT NULL,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-ALTER TABLE api_config
-  ADD COLUMN auth_mode VARCHAR(20) NOT NULL DEFAULT 'API_KEY'
-  CHECK (auth_mode IN ('PUBLIC', 'API_KEY'));
