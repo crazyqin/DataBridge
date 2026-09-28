@@ -5,7 +5,7 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import type { Apis } from './apis.ts'
+import type { Api, Apis } from './apis.ts'
 import { userAgentAllowed } from './apis.ts'
 import type { Auth } from './auth.ts'
 import type { Config } from './config.ts'
@@ -185,7 +185,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     const query = { page: Number(c.req.query('page') ?? 1), pageSize: Number(c.req.query('pageSize') ?? 50) }
     const page = integer(query, 'page', '页码', 1, 1_000_000)
     const pageSize = integer(query, 'pageSize', '每页条数', 1, 200)
-    return admin(c, apis.rows(id(c.req.param('id')), page, pageSize))
+    return admin(c, apis.rows(id(c.req.param('id')), page, pageSize, c.req.query('search') ?? ''))
   })
   app.post('/admin/apis/:id/rows', async c => admin(c, apis.createRow(id(c.req.param('id')), await readJson(c)), 201))
   app.put('/admin/apis/:id/rows/:key', async c => {
@@ -197,6 +197,11 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     const version = integer({ version: Number(c.req.query('version')) }, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER)
     apis.deleteRow(id(c.req.param('id')), c.req.param('key'), version)
     return c.body(null, 204)
+  })
+  app.patch('/admin/apis/:id/rows/:key/remark', async c => {
+    const input = await readJson(c)
+    const version = integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER)
+    return admin(c, apis.updateRemark(id(c.req.param('id')), c.req.param('key'), version, input.remark))
   })
   app.post('/admin/apis/:id/rows/:key/move', async c => {
     const position = integer(await readJson(c), 'position', '位置', 1, Number.MAX_SAFE_INTEGER)
@@ -212,6 +217,27 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
 
   // ---- open API ----
 
+  function pagination(api: Api, input: JsonObject) {
+    const allowed = api.mode === 'REALTIME' ? api.params.map(param => param.name) : api.filters
+    const pageKey = Object.hasOwn(input, '_page') && !allowed.includes('_page') ? '_page' : allowed.includes('page') ? null : 'page'
+    const sizeKey = Object.hasOwn(input, '_pageSize') && !allowed.includes('_pageSize') ? '_pageSize' : allowed.includes('pageSize') ? null : 'pageSize'
+    if (!(pageKey && Object.hasOwn(input, pageKey) || sizeKey && Object.hasOwn(input, sizeKey))) {
+      return { input, page: undefined, pageSize: undefined }
+    }
+    const read = (key: string | null, label: string, fallback: number, max: number) => {
+      const value = key ? input[key] : undefined
+      if (value === undefined) return fallback
+      const number = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value
+      return integer({ value: number }, 'value', label, 1, max)
+    }
+    const page = read(pageKey, '页码', 1, 1_000_000)
+    const pageSize = read(sizeKey, '每页条数', Math.min(100, api.maxRows), Math.min(1000, api.maxRows))
+    const params = { ...input }
+    if (pageKey) delete params[pageKey]
+    if (sizeKey) delete params[sizeKey]
+    return { input: params, page, pageSize }
+  }
+
   app.all('/open/*', async c => {
     const started = performance.now()
     const at = now()
@@ -224,17 +250,32 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       if (api.auth === 'API_KEY' && !auth.checkKey(c.req.header('X-API-Key'))) throw unauthorized('API Key 无效')
       if (!userAgentAllowed(api.userAgents, c.req.header('User-Agent'))) throw forbidden('User-Agent 不被允许')
       const input: JsonObject = api.method === 'GET' ? c.req.query() : await readJson(c)
+      const paging = pagination(api, input)
       if (api.mode === 'REALTIME' && activeQueries >= config.maxConcurrentQueries) throw new HttpError(503, '服务繁忙，请稍后再试')
       activeQueries++
       let rows
+      let total: number | undefined
       try {
-        rows = await apis.query(api, input)
+        if (paging.page !== undefined && paging.pageSize !== undefined) {
+          const result = await apis.queryPage(api, paging.input, paging.page, paging.pageSize)
+          rows = result.rows
+          total = result.total
+        } else {
+          rows = await apis.query(api, paging.input)
+        }
       } finally {
         activeQueries--
       }
       count = rows.length
       const meta: Record<string, Json> = { count, source: api.mode, request_id: requestId }
       if (api.mode === 'SNAPSHOT') meta.last_sync_time = api.syncAt
+      if (total !== undefined) {
+        meta.page = paging.page!
+        meta.page_size = paging.pageSize!
+        meta.total = total
+        meta.total_pages = Math.ceil(total / paging.pageSize!)
+        meta.has_more = paging.page! * paging.pageSize! < total
+      }
       return send(c, { code: 0, message: 'success', data: rows, meta })
     } catch (e) {
       error = e instanceof HttpError ? e.message : '服务器内部错误'

@@ -22,10 +22,11 @@ docker compose up -d --build
 
 ```bash
 docker build --platform linux/amd64 -t databridge:1.0.0 .
-docker save databridge:1.0.0 | gzip > databridge-1.0.0-amd64.tar.gz
+mkdir -p release
+docker save databridge:1.0.0 | gzip > release/databridge-1.0.0-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传该文件，然后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.0.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
@@ -34,6 +35,8 @@ docker save databridge:1.0.0 | gzip > databridge-1.0.0-amd64.tar.gz
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
 | Restart policy | `Unless stopped` |
+
+更新已有容器时继续挂载原来的 `/data` 卷。服务启动时会自动升级 SQLite 表结构；更新前可按下文的「备份与恢复」步骤备份数据卷。
 
 ### 首次登录
 
@@ -86,6 +89,15 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001'
 
 **参数**：GET 接口从查询字符串读取参数，POST 接口从 JSON 请求体读取参数。未声明的参数会被拒绝（400）。SQL 中用 `:name` 引用参数，每个参数都必须声明类型；保存配置时会检查 SQL 与参数声明是否一一对应。
 
+**分页**：三种数据模式都支持可选的 `page` 和 `pageSize`。GET 放在查询字符串，POST 放在 JSON 请求体。只传其中一个也会开启分页；页码默认 1，每页默认最多 100 条。`pageSize` 上限为 1000，且不能超过该 API 配置的「最大行数」。分页响应的 `meta` 增加 `page`、`page_size`、`total`、`total_pages`、`has_more`；`count` 是本页条数。超过末页返回空数组。未传分页参数时，响应格式和原有最大行数限制保持不变。如果业务参数或过滤字段叫 `page` / `pageSize`，可改用 `_page` / `_pageSize` 指定分页。实时查询分页会额外执行一次总数查询；SQL 应写明 `ORDER BY`，以保证翻页顺序稳定。
+
+```bash
+curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001&page=1&pageSize=50'
+# POST 接口的 JSON 请求体示例：{"page":2,"pageSize":50,"cust_id":"10001"}
+```
+
+分页响应中，`data` 只包含当前页，`meta` 例如：`{"count":50,"source":"MANUAL","request_id":"…","page":2,"page_size":50,"total":123,"total_pages":3,"has_more":true}`。
+
 **类型**：可用的字段类型有 `string`、`integer`（64 位）、`decimal`、`boolean`、`date`（`YYYY-MM-DD`）、`datetime`。
 - `datetime` 带时区偏移时，会换算成 UTC 进行比较。
 - `datetime` 不带时区偏移时，按 `TZ` 解释。
@@ -98,7 +110,7 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001'
 **只读**：
 - 只接受一条以 `SELECT` 或 `WITH` 开头的语句。
 - 语句在 `READ ONLY` 事务中执行，包含写入的 CTE 等写操作会被数据库拒绝。
-- 有语句超时和最大行数限制，超出最大行数时返回 422。
+- 有语句超时和最大行数限制。未分页的实时查询超过最大行数时返回 422；分页请求的每页条数受最大行数限制。
 
 ## 三种数据模式
 
@@ -114,7 +126,9 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001'
 - 结果为空，且没有开启「空结果覆盖」；
 - 同步期间 API 或数据源的配置发生了变化。
 
-拖动调整过的顺序会在后续同步中保留，新出现的行排在末尾。
+拖动调整过的顺序会在后续同步中保留，新出现的行排在末尾。在「数据维护」页，可按所有记录的字段值查询；拖动记录到相邻页区域可跨页排序，点击位次可直接移动到任意位置。
+
+**记录备注**：在「数据维护」页，每条定时同步或手工维护记录都可以添加最多 2000 字的备注；查询也会匹配备注内容。定时同步会按唯一键保留已有记录的备注。备注非空时，开放 API 在对应数据对象中增加 `__databridge_remark` 字段；清空备注后，该字段不再返回。该字段名留给平台备注使用，原数据若有同名字段，保存备注时会提示冲突。实时查询没有本地记录，因此不提供逐条备注。
 
 **过滤**：定时同步和手工维护的接口，可以按「允许过滤」中列出的字段做等值过滤，这些字段需要先在字段定义中声明类型。
 - 比较按字段类型进行，所以 `price=1.5` 能匹配存储的 `1.50`。

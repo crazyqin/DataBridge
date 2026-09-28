@@ -145,6 +145,11 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
     assert.deepEqual(one.json.data, [{ id: 1, name: 'one' }])
     assert.equal(one.headers.get('X-Request-ID'), one.json.meta.request_id)
     assert.equal((await open('/open/items', { method: 'POST', body: { id: 0 }, headers: ua })).status, 422)
+    const secondPage = await open('/open/items', { method: 'POST', body: { id: 0, page: 2, pageSize: 2 }, headers: ua })
+    assert.equal(secondPage.status, 200, secondPage.text)
+    assert.deepEqual(secondPage.json.data, [{ id: 3, name: 'three' }])
+    assert.equal(secondPage.json.meta.total, 3)
+    assert.equal(secondPage.json.meta.has_more, false)
     assert.equal((await open('/open/items')).status, 404)
 
     const broken = await createApi({ name: 'broken', code: 'broken', path: '/open/broken', mode: 'REALTIME', sql: "SELECT 'secret-value'::int AS x" })
@@ -194,10 +199,21 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
     assert.equal((await open('/open/snap?name=one')).status, 400)
 
     const rows = (await call('GET', `/admin/apis/${api.id}/rows`)).json.items
+    const noted = await call('PATCH', `/admin/apis/${api.id}/rows/${rows[2].key}/remark`, { version: rows[2].version, remark: '重点复核' })
+    assert.equal(noted.status, 200, noted.text)
+    assert.equal((await call('PATCH', `/admin/apis/${api.id}/rows/${rows[2].key}/remark`, { version: rows[2].version, remark: '旧备注' })).status, 409)
+    assert.equal((await call('PATCH', `/admin/apis/${api.id}/rows/${rows[2].key}/remark`, { version: noted.json.version, remark: 'x'.repeat(2001) })).status, 400)
+    assert.equal((await call('GET', `/admin/apis/${api.id}/rows?search=${encodeURIComponent('重点复核')}`)).json.items[0].key, rows[2].key)
+    assert.equal((await open('/open/snap?page=2&pageSize=2')).json.data[0].__databridge_remark, '重点复核')
     assert.equal((await call('POST', `/admin/apis/${api.id}/rows/${rows[2].key}/move`, { position: 1 })).status, 204)
     await source.query("INSERT INTO databridge_test.item VALUES (4, 'four', 4, NULL)")
     await call('POST', `/admin/apis/${api.id}/sync`)
     assert.deepEqual((await open('/open/snap')).json.data.map((row: { id: number }) => row.id), [3, 1, 2, 4])
+    assert.equal((await open('/open/snap')).json.data[0].__databridge_remark, '重点复核')
+    assert.equal((await call('GET', `/admin/apis/${api.id}/rows`)).json.items[0].version, noted.json.version)
+    const cleared = await call('PATCH', `/admin/apis/${api.id}/rows/${rows[2].key}/remark`, { version: noted.json.version, remark: '  ' })
+    assert.equal(cleared.json.remark, '')
+    assert.equal((await open('/open/snap')).json.data[0].__databridge_remark, undefined)
 
     // Duplicate keys by value ("1.0" vs "1.00") keep the previous snapshot.
     const current = (await call('GET', `/admin/apis/${api.id}`)).json
@@ -249,8 +265,12 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
     const filtered = await call('GET', '/open/manual?code=002')
     assert.deepEqual(filtered.json.data.map((row: { code: string }) => row.code), ['002'])
 
-    const updated = await call('PUT', `${rowsUrl}/${a.key}`, { version: a.version, data: { code: '001', n: 7 } })
+    const note = await call('PATCH', `${rowsUrl}/${a.key}/remark`, { version: a.version, remark: '人工确认' })
+    assert.equal(note.status, 200, note.text)
+    assert.equal((await open('/open/manual?code=001')).json.data[0].__databridge_remark, '人工确认')
+    const updated = await call('PUT', `${rowsUrl}/${a.key}`, { version: note.json.version, data: { code: '001', n: 7 } })
     assert.equal(updated.status, 200)
+    assert.equal((await open('/open/manual?n=7')).json.data[0].__databridge_remark, '人工确认')
     assert.equal((await call('PUT', `${rowsUrl}/${a.key}`, { version: a.version, data: { code: 'stale' } })).status, 409)
     assert.equal((await call('DELETE', `${rowsUrl}/${a.key}?version=${a.version}`)).status, 409)
 
@@ -260,6 +280,7 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
     assert.equal(migrated.status, 200, migrated.text)
     const after = (await call('GET', rowsUrl)).json.items[0]
     assert.deepEqual(after.data, { code: 1, n: 7 })
+    assert.equal(after.remark, '人工确认')
     assert.equal(after.version, updated.json.version + 1)
     assert.equal((await call('PUT', `${rowsUrl}/${a.key}`, { version: updated.json.version, data: { code: 3 } })).status, 409)
     assert.equal((await call('DELETE', `${rowsUrl}/${a.key}?version=${after.version}`)).status, 204)

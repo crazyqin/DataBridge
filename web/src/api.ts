@@ -17,7 +17,7 @@ export interface Api {
   syncAt?: string | null; syncStatus?: string | null; syncCount?: number | null; syncError?: string | null; nextSyncAt?: string | null
 }
 
-export interface StoredRow { key: string; version: number; sorted: boolean; data: Record<string, unknown> }
+export interface StoredRow { key: string; version: number; sorted: boolean; position: number; remark: string; data: Record<string, unknown> }
 
 export const FIELD_TYPES: FieldType[] = ['string', 'integer', 'decimal', 'boolean', 'date', 'datetime']
 export const MODE_LABELS: Record<Mode, string> = { REALTIME: '实时查询', SNAPSHOT: '定时同步', MANUAL: '手工维护' }

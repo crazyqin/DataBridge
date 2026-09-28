@@ -82,6 +82,7 @@ const MIGRATIONS = [
   );
   CREATE INDEX request_log_at ON request_log (at);
   `,
+  `ALTER TABLE api_row ADD COLUMN remark TEXT NOT NULL DEFAULT '';`,
 ]
 
 export type Db = DatabaseSync

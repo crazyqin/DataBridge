@@ -44,6 +44,13 @@ export interface Api {
 }
 
 export type Row = Record<string, Json>
+export interface PageResult { rows: Row[]; total: number; page: number; pageSize: number }
+export const REMARK_FIELD = '__databridge_remark'
+function withRemark(row: Row, remark: string): Row {
+  if (!remark) return row
+  if (Object.hasOwn(row, REMARK_FIELD)) throw new HttpError(422, `数据字段 ${REMARK_FIELD} 与平台备注冲突`)
+  return { ...row, [REMARK_FIELD]: remark }
+}
 
 interface ApiRow {
   id: number; name: string; code: string; path: string; method: Api['method']; auth: Api['auth']; user_agents: string
@@ -302,12 +309,17 @@ export class Apis {
           throw conflict('同步期间 API 配置已变更，快照未更新')
         }
         if (this.sources.get(source.id).version !== source.version) throw conflict('同步期间数据源配置已变更，快照未更新')
-        const sorts = new Map((this.db.prepare('SELECT row_key, sort FROM api_row WHERE api_id = ? AND sort IS NOT NULL')
-          .all(id) as { row_key: string; sort: number }[]).map(row => [row.row_key, row.sort]))
+        const previous = new Map((this.db.prepare('SELECT row_key, sort, remark, version FROM api_row WHERE api_id = ?')
+          .all(id) as { row_key: string; sort: number | null; remark: string; version: number }[]).map(row => [row.row_key, row]))
         this.db.prepare('DELETE FROM api_row WHERE api_id = ?').run(id)
-        const insert = this.db.prepare('INSERT INTO api_row (api_id, row_key, data, position, sort, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+        const insert = this.db.prepare(`INSERT INTO api_row (api_id, row_key, data, position, sort, remark, version, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
         const time = now()
-        result.rows.forEach((row, index) => insert.run(id, keys[index], stringify(row), index, sorts.get(keys[index]) ?? null, time))
+        result.rows.forEach((row, index) => {
+          const old = previous.get(keys[index])
+          if (old?.remark && Object.hasOwn(row, REMARK_FIELD)) throw bad(`数据字段 ${REMARK_FIELD} 与平台备注冲突，已保留上一次快照`)
+          insert.run(id, keys[index], stringify(row), index, old?.sort ?? null, old?.remark ?? '', old?.version ?? 1, time)
+        })
         this.db.prepare("UPDATE api SET sync_at = ?, sync_status = 'SUCCESS', sync_count = ?, sync_error = NULL WHERE id = ?")
           .run(time, result.rows.length, id)
       })
@@ -325,15 +337,35 @@ export class Apis {
 
   // ---- stored rows ----
 
-  rows(id: number, page: number, pageSize: number) {
+  rows(id: number, page: number, pageSize: number, search = '') {
     const api = this.get(id)
     if (api.mode === 'REALTIME') throw bad('实时查询模式没有本地数据')
-    const { total } = this.db.prepare('SELECT count(*) AS total FROM api_row WHERE api_id = ?').get(id) as { total: number }
-    const items = (this.db.prepare(`SELECT row_key, data, version, sort FROM api_row WHERE api_id = ?
-      ORDER BY sort IS NULL, sort, position LIMIT ? OFFSET ?`).all(id, pageSize, (page - 1) * pageSize) as
-      { row_key: string; data: string; version: number; sort: number | null }[])
-      .map(row => ({ key: row.row_key, version: row.version, sorted: row.sort !== null, data: parse(row.data) }))
-    return { items, total, page, pageSize }
+    const query = search.trim()
+    if (query.length > 200) throw bad('搜索内容不能超过 200 个字符')
+    const offset = (page - 1) * pageSize
+    if (!query) {
+      const { total } = this.db.prepare('SELECT count(*) AS total FROM api_row WHERE api_id = ?').get(id) as { total: number }
+      const items = (this.db.prepare(`SELECT row_key, data, remark, version, sort FROM api_row WHERE api_id = ?
+        ORDER BY sort IS NULL, sort, position LIMIT ? OFFSET ?`).all(id, pageSize, offset) as
+        { row_key: string; data: string; remark: string; version: number; sort: number | null }[])
+        .map((row, index) => ({ key: row.row_key, version: row.version, sorted: row.sort !== null,
+          position: offset + index + 1, remark: row.remark, data: parse(row.data) }))
+      return { items, total, allTotal: total, page, pageSize }
+    }
+    const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`
+    const sql = `WITH ordered AS (
+      SELECT row_key, data, remark, version, sort, row_number() OVER (ORDER BY sort IS NULL, sort, position) AS position
+      FROM api_row WHERE api_id = ?
+    ) SELECT * FROM ordered WHERE EXISTS (SELECT 1 FROM json_each(ordered.data)
+      WHERE CAST(value AS TEXT) LIKE ? ESCAPE '\\') OR remark LIKE ? ESCAPE '\\'`
+    const args = [id, pattern, pattern]
+    const { total } = this.db.prepare(`SELECT count(*) AS total FROM (${sql})`).get(...args) as { total: number }
+    const items = (this.db.prepare(`${sql} ORDER BY position LIMIT ? OFFSET ?`).all(...args, pageSize, offset) as
+      { row_key: string; data: string; remark: string; version: number; sort: number | null; position: number }[])
+      .map(row => ({ key: row.row_key, version: row.version, sorted: row.sort !== null,
+        position: row.position, remark: row.remark, data: parse(row.data) }))
+    const allTotal = (this.db.prepare('SELECT count(*) AS total FROM api_row WHERE api_id = ?').get(id) as { total: number }).total
+    return { items, total, allTotal, page, pageSize }
   }
 
   private normalizeManual(fields: Field[], input: JsonObject, rejectUnknown: boolean): Row {
@@ -388,6 +420,20 @@ export class Apis {
     throw conflict('记录已被修改，请刷新后再操作')
   }
 
+  updateRemark(id: number, key: string, version: number, remark: unknown) {
+    const api = this.get(id)
+    if (api.mode === 'REALTIME') throw bad('实时查询模式没有本地数据')
+    if (typeof remark !== 'string' || remark.length > 2000) throw bad('备注必须是 2000 个字符以内的文本')
+    const value = remark.trim()
+    const existing = this.db.prepare('SELECT data FROM api_row WHERE api_id = ? AND row_key = ?').get(id, key) as { data: string } | undefined
+    if (!existing) throw notFound('记录不存在')
+    if (value && Object.hasOwn(parse(existing.data) as Row, REMARK_FIELD)) throw bad(`数据字段 ${REMARK_FIELD} 与平台备注冲突`)
+    const changed = this.db.prepare(`UPDATE api_row SET remark = ?, version = version + 1, updated_at = ?
+      WHERE api_id = ? AND row_key = ? AND version = ?`).run(value, now(), id, key, version)
+    if (changed.changes === 0) this.rowConflict(id, key)
+    return { key, version: version + 1, remark: value }
+  }
+
   /** Moves one snapshot row to a 1-based position; every row then keeps an explicit order. */
   moveRow(id: number, key: string, position: number) {
     transaction(this.db, () => {
@@ -414,9 +460,29 @@ export class Apis {
     return api.mode === 'REALTIME' ? this.realtime(api, input) : this.local(api, input)
   }
 
+  async queryPage(api: Api, input: JsonObject, page: number, pageSize: number): Promise<PageResult> {
+    if (api.mode !== 'REALTIME') return this.localPage(api, input, page, pageSize)
+    const { sql, values, pool } = this.realtimeStatement(api, input)
+    const source = `(${sql}) AS databridge_source`
+    const count = await runQuery(pool, `SELECT count(*)::text AS total FROM ${source}`, values,
+      { timeoutSeconds: api.timeoutSeconds, maxRows: 1 })
+    const total = Number(count.rows[0].total)
+    if (!Number.isSafeInteger(total)) throw new HttpError(422, '结果总数过大，无法分页')
+    const result = await runQuery(pool, `SELECT * FROM ${source} LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, values,
+      { timeoutSeconds: api.timeoutSeconds, maxRows: pageSize })
+    return { rows: result.rows, total, page, pageSize }
+  }
+
   /** Runs the API's SQL with request parameters; used by open calls and by the editor's test button. */
   async realtime(api: Pick<Api, 'datasourceId' | 'sql' | 'params' | 'timeoutSeconds' | 'maxRows'>, input: JsonObject,
                  options: { truncate?: boolean } = {}): Promise<Row[]> {
+    const { sql, values, pool } = this.realtimeStatement(api, input)
+    const result = await runQuery(pool, sql, values, api)
+    if (result.truncated && !options.truncate) throw new HttpError(422, `查询结果超过最大行数 ${api.maxRows}`)
+    return result.rows
+  }
+
+  private realtimeStatement(api: Pick<Api, 'datasourceId' | 'sql' | 'params'>, input: JsonObject) {
     const unknown = Object.keys(input).find(key => !api.params.some(param => param.name === key))
     if (unknown) throw bad(`未定义的参数 ${unknown}`)
     const parsed = parseSql(api.sql!)
@@ -428,20 +494,46 @@ export class Apis {
     })
     const sql = positional(parsed, name => PG_TYPES[api.params.find(p => p.name === name)!.type])
     const { pool } = this.sources.pool(api.datasourceId!)
-    const result = await runQuery(pool, sql, values, api)
-    if (result.truncated && !options.truncate) throw new HttpError(422, `查询结果超过最大行数 ${api.maxRows}`)
-    return result.rows
+    return { sql, values, pool }
   }
 
   /** Equality filters over stored rows, compared by field type ("1.50" matches 1.5; null matches null). */
   private local(api: Api, input: JsonObject): Row[] {
+    const matches = this.localMatcher(api, input)
+    const rows: Row[] = []
+    const statement = this.db.prepare('SELECT data, remark FROM api_row WHERE api_id = ? ORDER BY sort IS NULL, sort, position')
+    for (const { data, remark } of statement.iterate(api.id) as Iterable<{ data: string; remark: string }>) {
+      const row = parse(data) as Row
+      if (!matches(row)) continue
+      if (rows.length === api.maxRows) throw new HttpError(422, `查询结果超过最大行数 ${api.maxRows}`)
+      rows.push(withRemark(row, remark))
+    }
+    return rows
+  }
+
+  private localPage(api: Api, input: JsonObject, page: number, pageSize: number): PageResult {
+    const matches = this.localMatcher(api, input)
+    const rows: Row[] = []
+    let total = 0
+    const offset = (page - 1) * pageSize
+    const statement = this.db.prepare('SELECT data, remark FROM api_row WHERE api_id = ? ORDER BY sort IS NULL, sort, position')
+    for (const { data, remark } of statement.iterate(api.id) as Iterable<{ data: string; remark: string }>) {
+      const row = parse(data) as Row
+      if (!matches(row)) continue
+      if (total >= offset && rows.length < pageSize) rows.push(withRemark(row, remark))
+      total++
+    }
+    return { rows, total, page, pageSize }
+  }
+
+  private localMatcher(api: Api, input: JsonObject): (row: Row) => boolean {
     const filters = Object.keys(input).map(name => {
       const field = api.fields.find(f => f.name === name)
       if (!field || !api.filters.includes(name)) throw bad(`不支持按 ${name} 过滤`)
       const value = convertOptional(own(input, name), field)
       return { field, want: value === null ? null : identity(value) }
     })
-    const matches = (row: Row) => filters.every(({ field, want }) => {
+    return (row: Row) => filters.every(({ field, want }) => {
       const value = own(row, field.name)
       if (want === null) return value === undefined || value === null
       if (value === undefined || value === null) return false
@@ -451,14 +543,5 @@ export class Apis {
         return false
       }
     })
-    const rows: Row[] = []
-    const statement = this.db.prepare('SELECT data FROM api_row WHERE api_id = ? ORDER BY sort IS NULL, sort, position')
-    for (const { data } of statement.iterate(api.id) as Iterable<{ data: string }>) {
-      const row = parse(data) as Row
-      if (!matches(row)) continue
-      if (rows.length === api.maxRows) throw new HttpError(422, `查询结果超过最大行数 ${api.maxRows}`)
-      rows.push(row)
-    }
-    return rows
   }
 }

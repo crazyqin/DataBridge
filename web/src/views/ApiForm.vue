@@ -195,7 +195,9 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
         <el-col v-if="sourced" :span="12">
           <el-form-item label="查询超时 (秒)"><el-input-number v-model="form.timeoutSeconds" :min="1" :max="120" /></el-form-item>
         </el-col>
-        <el-col :span="12"><el-form-item label="最大行数"><el-input-number v-model="form.maxRows" :min="1" :max="100000" /></el-form-item></el-col>
+        <el-col :span="12"><el-form-item label="最大行数"><el-input-number v-model="form.maxRows" :min="1" :max="100000" />
+          <span class="muted">非分页请求及同步的上限；分页请求每页不超过此值</span>
+        </el-form-item></el-col>
       </el-row>
       <el-form-item label="启用接口"><el-switch v-model="form.enabled" /></el-form-item>
       <el-form-item>
