@@ -189,3 +189,7 @@ test/     node:test 测试
 
 - 外部数据源只支持 PostgreSQL。
 - 只支持单实例部署：定时同步在进程内调度，会话也保存在内存中，重启服务后需要重新登录。
+
+## License
+
+本项目基于 [MIT License](LICENSE) 开源。
