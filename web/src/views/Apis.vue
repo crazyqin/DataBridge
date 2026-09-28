@@ -3,9 +3,11 @@ import { ElMessage } from 'element-plus'
 import { onMounted, ref } from 'vue'
 import { confirm, MODE_LABELS, request, type Api } from '../api'
 import ApiForm from './ApiForm.vue'
+import SyncHistoryDialog from './SyncHistoryDialog.vue'
 
 const apis = ref<Api[]>([])
 const editing = ref<Api | null>()
+const historyApi = ref<Api | null>(null)
 
 const load = async () => { apis.value = await request<Api[]>('/admin/apis') }
 onMounted(load)
@@ -66,15 +68,17 @@ async function closeForm() {
             <el-tag v-else-if="row.syncStatus" type="success">成功</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="230">
+        <el-table-column label="操作" width="300">
           <template #default="{ row }">
             <el-button link type="primary" @click="editing = row">编辑</el-button>
             <el-button link @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
             <el-button v-if="row.mode === 'SNAPSHOT'" link @click="sync(row)">立即同步</el-button>
+            <el-button v-if="row.mode === 'SNAPSHOT'" link @click="historyApi = row">同步详情</el-button>
             <el-button link type="danger" @click="remove(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
   </template>
+  <SyncHistoryDialog v-if="historyApi" :api="historyApi" @close="historyApi = null" />
 </template>

@@ -17,7 +17,8 @@ test('existing row databases gain an empty remark without losing records', () =>
   const file = join(dir, 'old.db')
   const old = new DatabaseSync(file)
   try {
-    old.exec(`CREATE TABLE api_row (api_id INTEGER, row_key TEXT, data TEXT, position INTEGER,
+    old.exec(`CREATE TABLE api (id INTEGER PRIMARY KEY, name TEXT);
+      CREATE TABLE api_row (api_id INTEGER, row_key TEXT, data TEXT, position INTEGER,
       sort INTEGER, version INTEGER DEFAULT 1, updated_at TEXT); PRAGMA user_version = 1;`)
     old.prepare('INSERT INTO api_row (api_id, row_key, data, position, updated_at) VALUES (?, ?, ?, ?, ?)')
       .run(1, 'old', '{"name":"kept"}', 0, '2026-01-01')
@@ -28,6 +29,8 @@ test('existing row databases gain an empty remark without losing records', () =>
   try {
     assert.deepEqual({ ...upgraded.prepare('SELECT row_key, data, remark FROM api_row').get() },
       { row_key: 'old', data: '{"name":"kept"}', remark: '' })
+    assert.ok(upgraded.prepare('PRAGMA table_info(api)').all().some((column: any) => column.name === 'cron_timezone'))
+    assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE name = 'sync_log'").get())
   } finally {
     upgraded.close()
     rmSync(dir, { recursive: true, force: true })

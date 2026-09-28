@@ -12,7 +12,7 @@ export interface Datasource {
 export interface Api {
   id?: number; name: string; code: string; path: string; method: 'GET' | 'POST'; auth: 'API_KEY' | 'PUBLIC'
   userAgents: string[]; mode: Mode; datasourceId: number | null; sql: string | null
-  params: Field[]; fields: Field[]; filters: string[]; keyFields: string[]; cron: string | null; allowEmpty: boolean
+  params: Field[]; fields: Field[]; filters: string[]; keyFields: string[]; cron: string | null; cronTimezone: string | null; allowEmpty: boolean
   timeoutSeconds: number; maxRows: number; enabled: boolean; version?: number
   syncAt?: string | null; syncStatus?: string | null; syncCount?: number | null; syncError?: string | null; nextSyncAt?: string | null
 }
@@ -45,6 +45,9 @@ export async function request<T = unknown>(path: string, options: Options = {}):
 }
 
 export const formatTime = (value?: string | null) => value ? new Date(value).toLocaleString() : ''
+export const formatTimeInZone = (value: string, timeZone: string) => new Intl.DateTimeFormat('zh-CN', {
+  timeZone, year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+}).format(new Date(value))
 
 export function display(value: unknown): string {
   if (value === null || value === undefined) return ''

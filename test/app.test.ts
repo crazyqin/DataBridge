@@ -192,6 +192,10 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
     })
     assert.ok(api.nextSyncAt)
     assert.equal((await call('POST', `/admin/apis/${api.id}/sync`)).json.count, 3)
+    const firstSync = await call('GET', `/admin/apis/${api.id}/sync-history`)
+    assert.equal(firstSync.status, 200)
+    assert.deepEqual(firstSync.json.items.map((item: { trigger: string; status: string; rowCount: number }) =>
+      [item.trigger, item.status, item.rowCount]), [['MANUAL', 'SUCCESS', 3]])
     const byTime = await open('/open/snap?seen=2026-09-25T10:00:00%2B08:00')
     assert.deepEqual(byTime.json.data.map((row: { id: number }) => row.id), [1])
     assert.deepEqual((await open('/open/snap?price=1.5')).json.data.map((row: { id: number }) => row.id), [1])
@@ -222,6 +226,10 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
     assert.equal((await call('POST', `/admin/apis/${api.id}/sync`)).status, 400)
     assert.equal((await open('/open/snap')).json.data.length, 4)
     assert.equal((await call('GET', `/admin/apis/${api.id}`)).json.syncStatus, 'FAILED')
+    const failedSync = await call('GET', `/admin/apis/${api.id}/sync-history`)
+    assert.equal(failedSync.json.items[0].status, 'FAILED')
+    assert.match(failedSync.json.items[0].error, /唯一键重复/)
+    assert.equal((await call('GET', `/admin/apis/${api.id}/sync-history?before=nope`)).status, 400)
 
     // An empty result is refused unless allowed.
     const empty = (await call('PUT', `/admin/apis/${api.id}`, { ...dupes.json, sql: 'SELECT 1 AS k WHERE false' })).json

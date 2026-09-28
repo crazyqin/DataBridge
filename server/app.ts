@@ -178,6 +178,13 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   app.post('/admin/apis/:id/enable', c => admin(c, apis.setEnabled(id(c.req.param('id')), true)))
   app.post('/admin/apis/:id/disable', c => admin(c, apis.setEnabled(id(c.req.param('id')), false)))
   app.post('/admin/apis/:id/sync', async c => admin(c, await apis.sync(id(c.req.param('id'))).catch(withDetail)))
+  app.get('/admin/apis/:id/sync-history', c => {
+    const before = c.req.query('before')
+    if (before !== undefined && (!/^\d+$/.test(before) || !Number.isSafeInteger(Number(before)) || Number(before) < 1)) {
+      throw bad('同步记录游标无效')
+    }
+    return admin(c, apis.syncHistory(id(c.req.param('id')), before === undefined ? undefined : Number(before)))
+  })
 
   // ---- stored rows ----
 

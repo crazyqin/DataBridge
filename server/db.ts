@@ -83,6 +83,20 @@ const MIGRATIONS = [
   CREATE INDEX request_log_at ON request_log (at);
   `,
   `ALTER TABLE api_row ADD COLUMN remark TEXT NOT NULL DEFAULT '';`,
+  `
+  ALTER TABLE api ADD COLUMN cron_timezone TEXT;
+  CREATE TABLE sync_log (
+    id INTEGER PRIMARY KEY,
+    api_id INTEGER NOT NULL REFERENCES api(id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    trigger TEXT NOT NULL,
+    status TEXT NOT NULL,
+    row_count INTEGER,
+    error TEXT
+  );
+  CREATE INDEX sync_log_api_id ON sync_log (api_id, id DESC);
+  `,
 ]
 
 export type Db = DatabaseSync

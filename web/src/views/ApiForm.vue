@@ -1,27 +1,31 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
-import { confirm, formatTime, MODE_LABELS, request, type Api, type Datasource } from '../api'
+import { confirm, formatTimeInZone, MODE_LABELS, request, type Api, type Datasource } from '../api'
 import FieldTable from './FieldTable.vue'
+import SyncHistoryDialog from './SyncHistoryDialog.vue'
 
 const props = defineProps<{ api: Api | null }>()
 const emit = defineEmits<{ close: [] }>()
 
 const blank: Api = {
   name: '', code: '', path: '/open/', method: 'GET', auth: 'API_KEY', userAgents: [], mode: 'REALTIME', datasourceId: null,
-  sql: '', params: [], fields: [], filters: [], keyFields: [], cron: '0 */30 * * * *', allowEmpty: false,
+  sql: '', params: [], fields: [], filters: [], keyFields: [], cron: '0 */30 * * * *',
+  cronTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', allowEmpty: false,
   timeoutSeconds: 10, maxRows: 10000, enabled: false,
 }
 
 // Deep copy through JSON: the prop is a reactive proxy, which structuredClone rejects.
 const clone = (api: Api): Api => JSON.parse(JSON.stringify(api))
+const editable = (api: Api): Api => clone({ ...api, cronTimezone: api.cronTimezone || blank.cronTimezone })
 
 const saved = ref<Api | null>(props.api)
-const form = ref<Api>(clone({ ...blank, ...props.api }))
+const form = ref<Api>(editable({ ...blank, ...props.api }))
 const lists = ref(listsOf(form.value))
 const sources = ref<Datasource[]>([])
 const saving = ref(false)
 const testing = ref(false)
+const showHistory = ref(false)
 const testParams = ref('{}')
 const result = ref<{ elapsedMs: number; count: number; rows: unknown[] }>()
 
@@ -74,7 +78,7 @@ async function save() {
     const id = saved.value?.id
     const api = await request<Api>(id ? `/admin/apis/${id}` : '/admin/apis', { method: id ? 'PUT' : 'POST', body })
     saved.value = api
-    form.value = clone(api)
+    form.value = editable(api)
     lists.value = listsOf(api)
     ElMessage.success('已保存')
   } finally {
@@ -85,7 +89,7 @@ async function save() {
 async function reload() {
   const api = await request<Api>(`/admin/apis/${saved.value!.id}`)
   saved.value = api
-  form.value = clone(api)
+  form.value = editable(api)
   lists.value = listsOf(api)
 }
 
@@ -172,13 +176,18 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
         <el-form-item label="唯一键"><el-input v-model="lists.keyFields" placeholder="如 id，或 area_id, prod_id" /></el-form-item>
         <el-form-item label="同步 Cron">
           <el-input v-model="form.cron" class="mono" placeholder="秒 分 时 日 月 周，如 0 */30 * * * *" />
-          <span v-if="saved?.nextSyncAt" class="muted">下次同步：{{ formatTime(saved.nextSyncAt) }}</span>
+          <span v-if="saved?.nextSyncAt && saved.cronTimezone" class="muted">当前配置下次同步：{{ formatTimeInZone(saved.nextSyncAt, saved.cronTimezone) }}（{{ saved.cronTimezone }}）</span>
+        </el-form-item>
+        <el-form-item label="同步时区">
+          <el-input v-model="form.cronTimezone" class="mono" placeholder="如 Asia/Shanghai" />
+          <span class="muted">Cron 按此时区执行；修改后保存生效。</span>
         </el-form-item>
         <el-form-item label="空结果覆盖">
           <el-switch v-model="form.allowEmpty" /><span class="muted" style="margin-left: 12px">关闭时，空结果不会覆盖已有快照</span>
         </el-form-item>
-        <el-form-item v-if="saved?.id" label="上次同步">
-          <span class="muted">{{ saved.syncAt ? formatTime(saved.syncAt) : '尚未成功同步' }} · {{ saved.syncCount ?? 0 }} 行</span>
+        <el-form-item v-if="saved?.id" label="上次成功同步">
+          <span class="muted">{{ saved.syncAt && saved.cronTimezone ? formatTimeInZone(saved.syncAt, saved.cronTimezone) : '尚未成功同步' }} · {{ saved.syncCount ?? 0 }} 行</span>
+          <el-button link type="primary" style="margin-left: 12px" @click="showHistory = true">查看同步详情</el-button>
           <el-alert v-if="saved.syncError" :title="saved.syncError" type="error" :closable="false" />
         </el-form-item>
       </template>
@@ -215,4 +224,5 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
       <pre v-if="result" class="result">{{ JSON.stringify(result.rows, null, 2) }}</pre>
     </template>
   </el-card>
+  <SyncHistoryDialog v-if="showHistory && saved?.id" :api="saved" @close="showHistory = false" />
 </template>

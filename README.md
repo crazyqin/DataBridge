@@ -52,14 +52,14 @@ cat /data/initial-admin-password
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `TZ` | 系统时区 | 用于 Cron 调度，也是数据源会话的时区 |
+| `TZ` | 系统时区 | 新建 API 未指定同步时区时的默认值，也是数据源会话的时区 |
 | `PORT` | `8080` | 监听端口 |
 | `DATA_DIR` | `./data`（镜像内为 `/data`） | SQLite 数据库、密钥和初始密码所在目录 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / 随机 | 只在首次启动时使用 |
 | `APP_SECRET_KEY` | 自动生成到 `DATA_DIR/secret.key` | 加密数据源密码的 AES-256 密钥，Base64 编码的 32 字节 |
 | `TRUST_PROXY` | `false` | 位于反向代理之后时设为 `true`：用 `X-Forwarded-For` 做登录限流，按 `X-Forwarded-Proto` 设置 Secure Cookie 和 HSTS |
 | `COOKIE_SECURE` | `auto` | 设为 `true` 或 `false` 时，强制开启或关闭 Secure Cookie |
-| `LOG_RETENTION_DAYS` | `30` | 调用日志保留天数 |
+| `LOG_RETENTION_DAYS` | `30` | 调用日志和同步详情保留天数 |
 | `MAX_CONCURRENT_QUERIES` | `20` | 同时执行的实时查询上限，超出返回 503 |
 
 ## 创建第一个接口
@@ -120,7 +120,7 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001&
 | 定时同步 | 按 Cron 或手动同步到平台 | 需要设置唯一键；数据可以拖动排序 |
 | 手工维护 | 在「数据维护」页面增删改 | 按字段定义校验数据 |
 
-**定时同步**：Cron 有 6 个字段，依次为秒、分、时、日、月、周，例如 `0 */30 * * * *`。一次同步要取回并校验全部结果后才会写入，写入是原子替换。以下情况都会保留上一次的快照：
+**定时同步**：Cron 有 6 个字段，依次为秒、分、时、日、月、周，例如 `0 0 12 * * *` 表示在所选同步时区的每天 12:00 执行。管理页面新建 API 时，同步时区默认取浏览器时区；已有 API 沿用原服务端 `TZ`，可在编辑页改为 `Asia/Shanghai` 等 IANA 时区。下次同步时间按同步时区显示；编辑页和 API 列表的「同步详情」可查看每次定时或手动同步的开始时间、结果、行数和错误。记录按 `LOG_RETENTION_DAYS` 保留，升级前的同步历史无法追溯。一次同步要取回并校验全部结果后才会写入，写入是原子替换。以下情况都会保留上一次的快照：
 - 查询失败，或结果超过最大行数；
 - 唯一键重复（数值按大小比较，`1.0` 和 `1.00` 视为重复）；
 - 结果为空，且没有开启「空结果覆盖」；

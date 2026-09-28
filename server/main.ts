@@ -21,10 +21,12 @@ apis.startSchedules()
 
 const housekeeping = setInterval(() => {
   logs.prune(config.logRetentionDays)
+  apis.pruneSyncHistory(config.logRetentionDays)
   auth.prune()
 }, 60 * 60 * 1000)
 housekeeping.unref()
 logs.prune(config.logRetentionDays)
+apis.pruneSyncHistory(config.logRetentionDays)
 
 const app = createApp({ config, db, auth, sources, apis, logs })
 const server = serve({ fetch: app.fetch, port: config.port }, info => {

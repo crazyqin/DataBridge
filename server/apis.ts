@@ -29,6 +29,7 @@ export interface Api {
   filters: string[]
   keyFields: string[]
   cron: string | null
+  cronTimezone: string | null
   allowEmpty: boolean
   timeoutSeconds: number
   maxRows: number
@@ -55,7 +56,7 @@ function withRemark(row: Row, remark: string): Row {
 interface ApiRow {
   id: number; name: string; code: string; path: string; method: Api['method']; auth: Api['auth']; user_agents: string
   mode: Mode; datasource_id: number | null; sql_text: string | null; params: string; fields: string; filters: string
-  key_fields: string; cron: string | null; allow_empty: number; timeout_seconds: number; max_rows: number; enabled: number
+  key_fields: string; cron: string | null; cron_timezone: string | null; allow_empty: number; timeout_seconds: number; max_rows: number; enabled: number
   version: number; sync_at: string | null; sync_status: string | null; sync_count: number | null; sync_error: string | null
   created_at: string; updated_at: string
 }
@@ -64,7 +65,7 @@ const toApi = (row: ApiRow): Api => ({
   id: row.id, name: row.name, code: row.code, path: row.path, method: row.method, auth: row.auth,
   userAgents: JSON.parse(row.user_agents), mode: row.mode, datasourceId: row.datasource_id, sql: row.sql_text,
   params: JSON.parse(row.params), fields: JSON.parse(row.fields), filters: JSON.parse(row.filters),
-  keyFields: JSON.parse(row.key_fields), cron: row.cron, allowEmpty: row.allow_empty === 1,
+  keyFields: JSON.parse(row.key_fields), cron: row.cron, cronTimezone: row.cron_timezone, allowEmpty: row.allow_empty === 1,
   timeoutSeconds: row.timeout_seconds, maxRows: row.max_rows, enabled: row.enabled === 1, version: row.version,
   syncAt: row.sync_at, syncStatus: row.sync_status, syncCount: row.sync_count, syncError: row.sync_error,
   createdAt: row.created_at, updatedAt: row.updated_at,
@@ -142,7 +143,26 @@ export class Apis {
 
   private withSchedule(api: Api): Api {
     const next = this.jobs.get(api.id)?.nextRun()
-    return api.mode === 'SNAPSHOT' ? { ...api, nextSyncAt: next ? next.toISOString() : null } : api
+    return api.mode === 'SNAPSHOT'
+      ? { ...api, cronTimezone: api.cronTimezone || this.config.timezone, nextSyncAt: next ? next.toISOString() : null }
+      : api
+  }
+
+  syncHistory(id: number, before?: number) {
+    const api = this.get(id)
+    if (api.mode !== 'SNAPSHOT') throw bad('只有定时同步模式的 API 有同步记录')
+    const limit = 50
+    const items = this.db.prepare(`SELECT id, started_at AS startedAt, finished_at AS finishedAt,
+      trigger, status, row_count AS rowCount, error FROM sync_log WHERE api_id = ? AND id < ?
+      ORDER BY id DESC LIMIT ?`).all(id, before ?? Number.MAX_SAFE_INTEGER, limit + 1) as {
+      id: number; startedAt: string; finishedAt: string | null; trigger: string; status: string; rowCount: number | null; error: string | null
+    }[]
+    return { items: items.slice(0, limit), nextBefore: items.length > limit ? items[limit - 1].id : null }
+  }
+
+  pruneSyncHistory(retentionDays: number) {
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString()
+    this.db.prepare("DELETE FROM sync_log WHERE started_at < ? AND status != 'RUNNING'").run(cutoff)
   }
 
   /** Validates a submitted configuration; the result is what gets stored. */
@@ -164,6 +184,8 @@ export class Apis {
       filters: mode === 'REALTIME' ? [] : names(input, 'filters', '过滤字段'),
       keyFields: mode === 'SNAPSHOT' ? names(input, 'keyFields', '唯一键') : [],
       cron: mode === 'SNAPSHOT' ? text(input, 'cron', '同步 Cron', { max: 100 }) : null,
+      cronTimezone: mode === 'SNAPSHOT'
+        ? text({ cronTimezone: input.cronTimezone ?? this.config.timezone }, 'cronTimezone', '同步时区', { max: 100 }) : null,
       allowEmpty: mode === 'SNAPSHOT' && flag(input, 'allowEmpty', '空结果覆盖', false),
       timeoutSeconds: sourced ? integer(input, 'timeoutSeconds', '查询超时', 1, 120, 10) : 10,
       maxRows: integer(input, 'maxRows', '最大行数', 1, 100_000, 10_000),
@@ -185,7 +207,12 @@ export class Apis {
     if (values.cron !== null) {
       let next: Date | null
       try {
-        next = new Cron(values.cron, { paused: true, timezone: this.config.timezone }).nextRun()
+        new Intl.DateTimeFormat('en', { timeZone: values.cronTimezone! })
+      } catch {
+        throw bad('同步时区无效，请填写 IANA 时区，如 Asia/Shanghai')
+      }
+      try {
+        next = new Cron(values.cron, { paused: true, timezone: values.cronTimezone! }).nextRun()
       } catch {
         throw bad('Cron 表达式无效')
       }
@@ -198,7 +225,7 @@ export class Apis {
     const v = this.validate(input)
     const time = now()
     const columns = [v.name, v.code, v.path, v.method, v.auth, stringify(v.userAgents), v.mode, v.datasourceId, v.sql,
-      stringify(v.params), stringify(v.fields), stringify(v.filters), stringify(v.keyFields), v.cron, v.allowEmpty ? 1 : 0,
+      stringify(v.params), stringify(v.fields), stringify(v.filters), stringify(v.keyFields), v.cron, v.cronTimezone, v.allowEmpty ? 1 : 0,
       v.timeoutSeconds, v.maxRows, v.enabled ? 1 : 0]
     const saved = transaction(this.db, () => {
       if (this.db.prepare('SELECT 1 FROM api WHERE code = ? AND id IS NOT ?').get(v.code, id ?? null)) throw conflict('接口编码已存在')
@@ -207,15 +234,15 @@ export class Apis {
       }
       if (id === undefined) {
         const result = this.db.prepare(`INSERT INTO api (name, code, path, method, auth, user_agents, mode, datasource_id, sql_text,
-          params, fields, filters, key_fields, cron, allow_empty, timeout_seconds, max_rows, enabled, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
+          params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
         return Number(result.lastInsertRowid)
       }
       const version = integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER)
       const current = this.get(id)
       if (current.version !== version) throw conflict('API 配置已被修改，请刷新后再保存')
       this.db.prepare(`UPDATE api SET name = ?, code = ?, path = ?, method = ?, auth = ?, user_agents = ?, mode = ?,
-        datasource_id = ?, sql_text = ?, params = ?, fields = ?, filters = ?, key_fields = ?, cron = ?, allow_empty = ?,
+        datasource_id = ?, sql_text = ?, params = ?, fields = ?, filters = ?, key_fields = ?, cron = ?, cron_timezone = ?, allow_empty = ?,
         timeout_seconds = ?, max_rows = ?, enabled = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(...columns, time, id)
       if (current.mode !== v.mode) {
         this.db.prepare('DELETE FROM api_row WHERE api_id = ?').run(id)
@@ -260,6 +287,9 @@ export class Apis {
   // ---- scheduling ----
 
   startSchedules() {
+    this.db.prepare(`UPDATE api SET sync_status = 'FAILED', sync_error = '服务重启，同步中断'
+      WHERE id IN (SELECT api_id FROM sync_log WHERE status = 'RUNNING')`).run()
+    this.db.prepare("UPDATE sync_log SET status = 'FAILED', finished_at = ?, error = '服务重启，同步中断' WHERE status = 'RUNNING'").run(now())
     for (const { id } of this.db.prepare("SELECT id FROM api WHERE mode = 'SNAPSHOT' AND enabled = 1").all() as { id: number }[]) {
       this.schedule(id)
     }
@@ -277,7 +307,7 @@ export class Apis {
     const row = this.db.prepare('SELECT * FROM api WHERE id = ?').get(id) as ApiRow | undefined
     if (!row || row.mode !== 'SNAPSHOT' || row.enabled !== 1 || !row.cron) return
     const version = row.version
-    this.jobs.set(id, new Cron(row.cron, { timezone: this.config.timezone, protect: true }, async () => {
+    this.jobs.set(id, new Cron(row.cron, { timezone: row.cron_timezone || this.config.timezone, protect: true }, async () => {
       await this.sync(id, version).catch(() => {}) // the failure is recorded on the API
     }))
   }
@@ -292,10 +322,15 @@ export class Apis {
     if (this.syncing.has(id)) throw conflict('该 API 正在同步，请稍后再试')
     this.syncing.add(id)
     let api: Api | undefined
+    let currentLogId: number | undefined
     try {
       api = this.get(id)
       if (api.mode !== 'SNAPSHOT') throw bad('只有定时同步模式的 API 可以同步')
       if (scheduledVersion !== undefined && (api.version !== scheduledVersion || !api.enabled)) return { count: 0 }
+      const logId = Number(this.db.prepare(`INSERT INTO sync_log (api_id, started_at, trigger, status)
+        VALUES (?, ?, ?, 'RUNNING')`).run(id, now(), scheduledVersion === undefined ? 'MANUAL' : 'SCHEDULED').lastInsertRowid)
+      // Keep the log id in scope for both completion and failure.
+      currentLogId = logId
       const { source, pool } = this.sources.pool(api.datasourceId!)
       const result = await runQuery(pool, positional(parseSql(api.sql!), () => 'text'), [], api)
       if (result.truncated) throw new HttpError(422, `同步结果超过最大行数 ${api.maxRows}，已保留上一次快照`)
@@ -322,12 +357,18 @@ export class Apis {
         })
         this.db.prepare("UPDATE api SET sync_at = ?, sync_status = 'SUCCESS', sync_count = ?, sync_error = NULL WHERE id = ?")
           .run(time, result.rows.length, id)
+        this.db.prepare("UPDATE sync_log SET status = 'SUCCESS', finished_at = ?, row_count = ? WHERE id = ?")
+          .run(time, result.rows.length, logId)
       })
       return { count: result.rows.length }
     } catch (error) {
       if (api?.mode === 'SNAPSHOT') {
         const message = error instanceof SourceError ? `${error.message}：${error.detail}` : (error as Error).message
         this.db.prepare("UPDATE api SET sync_status = 'FAILED', sync_error = ? WHERE id = ? AND version = ?").run(message, id, api.version)
+        if (currentLogId !== undefined) {
+          this.db.prepare("UPDATE sync_log SET status = 'FAILED', finished_at = ?, error = ? WHERE id = ?")
+            .run(now(), message, currentLogId)
+        }
       }
       throw error
     } finally {
