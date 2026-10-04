@@ -9,7 +9,7 @@ RUN npm run check && npm test && npm run build && npm prune --omit=dev
 FROM node:22.23-alpine
 WORKDIR /app
 ENV NODE_ENV=production DATA_DIR=/data PORT=8080
-COPY --from=build /app/package.json ./
+COPY --from=build /app/package.json /app/LICENSE ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server ./server
 COPY --from=build /app/web/dist ./web/dist
