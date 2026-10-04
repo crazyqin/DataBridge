@@ -85,6 +85,66 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001'
 
 出错时返回相应的 HTTP 状态码，响应体为 `{"code": 40001, "message": "…", "request_id": "…"}`。其中 `request_id` 与响应头 `X-Request-ID` 一致，也会记录在调用日志中。
 
+## 外部身份验证
+
+API 的「访问方式」可以选择「外部身份验证」，复用已有的身份服务。每个 API 独立配置验证请求、成功条件和响应字段映射；不要求特定客户端、凭证名称或返回结构，也无需为每个调用者创建平台 API Key。
+
+支持以下配置：
+
+| 配置 | 作用 | 示例 |
+| --- | --- | --- |
+| 验证地址、请求方式、超时 | 向固定地址发起 GET / POST，超时 1～30 秒 | `https://identity.example.com/verify` |
+| 凭证来源 Header、来源前缀 | 从调用请求中提取凭证；前缀可留空 | `Authorization`、`Bearer `（末尾一个空格） |
+| 凭证位置、目标名称、目标前缀 | 通过 Header、JSON 字段或表单字段传给验证服务 | Header `Authorization: Bearer …`，或 JSON `{"token":"…"}` |
+| 附加 Header、请求体 | 验证服务需要的固定配置；不会转发调用者的其他 Header | `{"X-Client-Id":"data-api"}`、`{"audience":"data-api"}` |
+| 成功 HTTP 状态 | 必须匹配的 2xx 状态 | `200` |
+| 成功判定路径、值 | 进一步检查响应中的标量值；路径留空则仅按 HTTP 状态判断成功 | `active` 等于 `true`，或 `code` 等于 `0` |
+| 身份参数映射 | 将响应字段按类型绑定到 SQL 参数 | `data.user.id` → `_auth_subject`，类型 `string` |
+
+GET 验证请求只支持通过 Header 传递凭证；JSON 和表单使用 POST。来源前缀会被移除，再加上目标前缀；两个前缀都允许留空。目标凭证会覆盖附加配置中的同名 Header / 字段。表单附加字段只支持标量值。验证地址和附加请求内容由管理员配置，调用者不能修改。
+
+成功判定值使用 JSON 格式，例如 `true`、`0`、`"ok"`；字符串 `"0"` 与数字 `0` 不相等。点分路径支持嵌套对象和数组下标，例如 `data.user.id`、`data.groups.0.id`；字段名包含点时需在身份服务端提供其他字段名。路径不存在、身份字段缺失或类型不匹配时拒绝查询，不使用默认身份。
+
+例如，某身份服务接受 `Authorization: Bearer <credential>`，返回：
+
+```json
+{"code":0,"data":{"user":{"id":"00123"},"tenant":{"id":"tenant-a"}}}
+```
+
+可以将成功条件设置为 `code` 等于 `0`，再添加以下映射：
+
+| SQL 参数名 | 响应字段路径 | 类型 |
+| --- | --- | --- |
+| `_auth_subject` | `data.user.id` | `string` |
+| `_auth_tenant` | `data.tenant.id` | `string` |
+
+SQL 中根据身份字段限定数据范围：
+
+```sql
+SELECT o.order_id, o.amount
+FROM orders o
+JOIN subject_customer_permission p ON p.customer_id = o.customer_id
+WHERE p.subject_id = :_auth_subject
+  AND o.tenant_id = :_auth_tenant
+ORDER BY o.order_id
+```
+
+身份参数名以 `_auth_` 开头，字段名和业务含义由配置决定。每项映射都必须在 SQL 中使用；不要在普通「请求参数」中再次声明。类型沿用平台字段类型，字符串保留前导零，大整数按原精度处理；映射结果通过 PostgreSQL 参数绑定，不拼接到 SQL 中。平台检查参数声明和类型，具体数据范围仍由 SQL 中的 `WHERE` / `JOIN` 条件决定。
+
+调用示例：
+
+```bash
+curl -H "Authorization: Bearer $ACCESS_TOKEN" 'http://localhost:8080/open/orders?page=1&pageSize=50'
+```
+
+GET 查询字符串和 POST 请求体均不能覆盖身份参数。分页数据和总数使用同一份已验证身份，每次请求只验证一次。所有数据模式都可使用外部验证作为访问门槛；**身份参数映射仅支持实时查询**，无映射时仅验证身份，不自动过滤记录。
+
+验证配置由管理员在 API 编辑页保存，数据库中加密存储，跟随 API 的版本号处理并发修改。实际凭证只随调用请求传入，不保存到 API 配置中。编辑器的 SQL 测试使用相同验证流程；输入不含前缀的测试凭证，执行后清空。
+
+外部验证不缓存结果、不跟随重定向、不自动转发客户端 Cookie；只有显式配置的 Header 会被发送。HTTP 401/403 或成功判定不匹配返回 401；服务异常或响应格式无效返回 502，超时返回 504，超出验证并发上限返回 503。验证并发上限为 `MAX_CONCURRENT_QUERIES`，需要解析的响应体最多 64 KiB。验证失败不会降级为公开访问，日志不记录凭证及外部响应内容；数据响应带 `Cache-Control: private, no-store`。
+
+验证服务应使用 HTTPS 或可信的内部通道。自定义凭证 Header 时，需确认反向代理会保留该 Header。已有公开接口和 API Key 接口保持原规则；无法识别的访问方式会拒绝调用，需要管理员重新配置。
+
 ## 接口规则
 
 **参数**：GET 接口从查询字符串读取参数，POST 接口从 JSON 请求体读取参数。未声明的参数会被拒绝（400）。SQL 中用 `:name` 引用参数，每个参数都必须声明类型；保存配置时会检查 SQL 与参数声明是否一一对应。

@@ -3,6 +3,18 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 export type FieldType = 'string' | 'integer' | 'decimal' | 'boolean' | 'date' | 'datetime'
 export interface Field { name: string; type: FieldType; required: boolean }
 export type Mode = 'REALTIME' | 'SNAPSHOT' | 'MANUAL'
+export interface ExternalAuthConfig {
+  url: string; method: 'GET' | 'POST'; inputHeader: string; inputPrefix: string
+  tokenLocation: 'header' | 'json' | 'form'; tokenName: string; tokenPrefix: string
+  headers: Record<string, string>; body: Record<string, unknown>
+  successStatus: number; successPath: string; successValue: unknown; timeoutSeconds: number
+  bindings: { name: string; path: string; type: FieldType }[]
+}
+export const defaultExternalAuth = (): ExternalAuthConfig => ({
+  url: '', method: 'POST', inputHeader: 'Authorization', inputPrefix: 'Bearer ',
+  tokenLocation: 'header', tokenName: 'Authorization', tokenPrefix: 'Bearer ', headers: {}, body: {},
+  successStatus: 200, successPath: 'active', successValue: true, timeoutSeconds: 5, bindings: [],
+})
 
 export interface Datasource {
   id: number; name: string; host: string; port: number; database: string; username: string
@@ -10,7 +22,8 @@ export interface Datasource {
 }
 
 export interface Api {
-  id?: number; name: string; code: string; path: string; method: 'GET' | 'POST'; auth: 'API_KEY' | 'PUBLIC'
+  id?: number; name: string; code: string; path: string; method: 'GET' | 'POST'; auth: 'API_KEY' | 'PUBLIC' | 'EXTERNAL'
+  externalAuth: ExternalAuthConfig | null
   userAgents: string[]; mode: Mode; datasourceId: number | null; sql: string | null
   params: Field[]; fields: Field[]; filters: string[]; keyFields: string[]; cron: string | null; cronTimezone: string | null; allowEmpty: boolean
   timeoutSeconds: number; maxRows: number; enabled: boolean; version?: number
@@ -22,7 +35,7 @@ export interface StoredRow { key: string; version: number; sorted: boolean; posi
 export const FIELD_TYPES: FieldType[] = ['string', 'integer', 'decimal', 'boolean', 'date', 'datetime']
 export const MODE_LABELS: Record<Mode, string> = { REALTIME: '实时查询', SNAPSHOT: '定时同步', MANUAL: '手工维护' }
 
-interface Options { method?: string; body?: unknown; rawBody?: string; silent?: boolean }
+interface Options { method?: string; body?: unknown; rawBody?: string; silent?: boolean; headers?: Record<string, string> }
 
 /** Calls the admin API; failures show a message and reject. */
 export async function request<T = unknown>(path: string, options: Options = {}): Promise<T> {
@@ -31,7 +44,7 @@ export async function request<T = unknown>(path: string, options: Options = {}):
   const response = await fetch(path, {
     method,
     credentials: 'same-origin',
-    headers: { 'X-Requested-With': 'DataBridge', ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }) },
+    headers: { 'X-Requested-With': 'DataBridge', ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
     body: payload,
   })
   if (response.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('auth-expired'))

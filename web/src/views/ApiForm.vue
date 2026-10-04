@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
-import { confirm, formatTimeInZone, MODE_LABELS, request, type Api, type Datasource } from '../api'
+import { confirm, defaultExternalAuth, formatTimeInZone, MODE_LABELS, request, type Api, type Datasource } from '../api'
 import FieldTable from './FieldTable.vue'
+import ExternalAuthForm from './ExternalAuthForm.vue'
 import SyncHistoryDialog from './SyncHistoryDialog.vue'
 
 const props = defineProps<{ api: Api | null }>()
@@ -10,6 +11,7 @@ const emit = defineEmits<{ close: [] }>()
 
 const blank: Api = {
   name: '', code: '', path: '/open/', method: 'GET', auth: 'API_KEY', userAgents: [], mode: 'REALTIME', datasourceId: null,
+  externalAuth: null,
   sql: '', params: [], fields: [], filters: [], keyFields: [], cron: '0 */30 * * * *',
   cronTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', allowEmpty: false,
   timeoutSeconds: 10, maxRows: 10000, enabled: false,
@@ -17,7 +19,7 @@ const blank: Api = {
 
 // Deep copy through JSON: the prop is a reactive proxy, which structuredClone rejects.
 const clone = (api: Api): Api => JSON.parse(JSON.stringify(api))
-const editable = (api: Api): Api => clone({ ...api, cronTimezone: api.cronTimezone || blank.cronTimezone })
+const editable = (api: Api): Api => clone({ ...api, cronTimezone: api.cronTimezone || blank.cronTimezone, externalAuth: api.externalAuth ?? defaultExternalAuth() })
 
 const saved = ref<Api | null>(props.api)
 const form = ref<Api>(editable({ ...blank, ...props.api }))
@@ -27,6 +29,12 @@ const saving = ref(false)
 const testing = ref(false)
 const showHistory = ref(false)
 const testParams = ref('{}')
+const testCredential = ref('')
+const externalForm = ref<InstanceType<typeof ExternalAuthForm>>()
+const externalConfig = computed({
+  get: () => form.value.externalAuth ?? defaultExternalAuth(),
+  set: value => { form.value.externalAuth = value },
+})
 const result = ref<{ elapsedMs: number; count: number; rows: unknown[] }>()
 
 const sourced = computed(() => form.value.mode !== 'MANUAL')
@@ -41,6 +49,7 @@ function payload(): Api {
   const api = form.value
   return {
     ...api,
+    externalAuth: api.auth === 'EXTERNAL' ? externalForm.value?.value() ?? api.externalAuth : null,
     userAgents: split(lists.value.userAgents, /\n/),
     keyFields: api.mode === 'SNAPSHOT' ? split(lists.value.keyFields, /[,，]/) : [],
     filters: api.mode === 'REALTIME' ? [] : split(lists.value.filters, /[,，]/),
@@ -71,7 +80,8 @@ async function confirmDataChanges(next: Api): Promise<boolean> {
 
 async function save() {
   fillCode()
-  const body = payload()
+  let body: Api
+  try { body = payload() } catch (error) { ElMessage.error((error as Error).message); return }
   if (!await confirmDataChanges(body)) return
   saving.value = true
   try {
@@ -95,20 +105,24 @@ async function reload() {
 
 /** Tests the form as it is now; parameters are sent verbatim so large numbers stay exact. */
 async function test() {
+  let api: Api
   try {
     JSON.parse(testParams.value || '{}')
-  } catch {
-    return ElMessage.error('测试参数不是有效的 JSON')
+    api = payload()
+  } catch (error) {
+    return ElMessage.error((error as Error).message)
   }
   testing.value = true
   result.value = undefined
   try {
     result.value = await request('/admin/apis/test', {
       method: 'POST',
-      rawBody: `{"api":${JSON.stringify(payload())},"params":${testParams.value.trim() || '{}'}}`,
+      rawBody: `{"api":${JSON.stringify(api)},"params":${testParams.value.trim() || '{}'}}`,
+      headers: api.auth === 'EXTERNAL' ? { 'X-DataBridge-Test-Credential': (api.externalAuth?.inputPrefix ?? '') + testCredential.value } : undefined,
     })
   } finally {
     testing.value = false
+    testCredential.value = ''
   }
 }
 
@@ -143,17 +157,22 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
         </el-col>
       </el-row>
       <el-form-item label="访问方式">
-        <el-radio-group v-model="form.auth"><el-radio value="API_KEY">需要 API Key</el-radio><el-radio value="PUBLIC">公开访问</el-radio></el-radio-group>
+        <el-radio-group v-model="form.auth">
+          <el-radio value="API_KEY">需要 API Key</el-radio><el-radio value="PUBLIC">公开访问</el-radio>
+          <el-radio value="EXTERNAL">外部身份验证</el-radio>
+        </el-radio-group>
       </el-form-item>
       <el-form-item label="User-Agent">
         <el-input v-model="lists.userAgents" type="textarea" :rows="2" placeholder="每行一条，留空不限制；末尾 * 表示前缀匹配，如 MyClient/*" />
-        <span class="muted">User-Agent 由客户端自行设置，只能做兼容性限制，不能代替 API Key。</span>
+        <span class="muted">User-Agent 由客户端自行设置，只能做兼容性限制，不能代替身份认证。</span>
       </el-form-item>
       <el-form-item label="数据模式">
         <el-radio-group v-model="form.mode">
           <el-radio-button v-for="(label, mode) in MODE_LABELS" :key="mode" :value="mode">{{ label }}</el-radio-button>
         </el-radio-group>
       </el-form-item>
+
+      <ExternalAuthForm v-if="form.auth === 'EXTERNAL'" ref="externalForm" v-model="externalConfig" :mode="form.mode" />
 
       <template v-if="sourced">
         <el-form-item label="数据源">
@@ -169,7 +188,7 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
 
       <el-form-item v-if="form.mode === 'REALTIME'" label="请求参数">
         <FieldTable v-model="form.params" add-label="添加参数" />
-        <span class="muted">SQL 中用 :参数名 引用，每个参数都要在这里声明类型。</span>
+        <span class="muted">SQL 中用 :参数名 引用，业务参数需在这里声明类型；外部身份参数在验证配置中映射。</span>
       </el-form-item>
 
       <template v-if="form.mode === 'SNAPSHOT'">
@@ -218,6 +237,8 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
       <el-divider content-position="left">测试当前 SQL（不需要先保存）</el-divider>
       <div class="toolbar">
         <el-input v-if="form.mode === 'REALTIME'" v-model="testParams" class="mono" placeholder='测试参数 JSON，如 {"id": "10001"}' style="max-width: 480px" />
+        <el-input v-if="form.auth === 'EXTERNAL'" v-model="testCredential" type="password" autocomplete="off"
+                  placeholder="测试凭证（不含前缀），本次测试后清空" style="max-width: 340px" />
         <el-button :loading="testing" @click="test">执行测试</el-button>
         <span v-if="result" class="muted">返回 {{ result.count }} 行 · {{ result.elapsedMs }}ms{{ result.count === form.maxRows ? '（已截断到最大行数）' : '' }}</span>
       </div>

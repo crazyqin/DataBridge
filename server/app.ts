@@ -16,6 +16,7 @@ import { parse, stringify, stringifyForBrowser, type Json, type JsonObject } fro
 import type { Logs } from './logs.ts'
 import { SourceError } from './query.ts'
 import type { Sources } from './sources.ts'
+import { ExternalAuth, TEST_CREDENTIAL_HEADER } from './external-auth.ts'
 
 type Env = { Variables: { requestId: string; user: string } }
 type Ctx = Context<Env>
@@ -49,6 +50,7 @@ function withDetail(error: unknown): never {
 
 export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   const app = new Hono<Env>()
+  const externalAuth = new ExternalAuth(config.maxConcurrentQueries)
   let activeQueries = 0
 
   const isHttps = (c: Ctx) => config.secureCookies === 'auto'
@@ -122,6 +124,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     if (!user) throw unauthorized()
     requireCsrfHeader(c)
     c.set('user', user)
+    c.header('Cache-Control', 'no-store')
     await next()
   })
 
@@ -166,7 +169,12 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       ...api, name: 'draft', code: 'draft', path: '/open/draft', mode: 'REALTIME', params: api.mode === 'REALTIME' ? api.params : [],
     })
     const started = performance.now()
-    const rows = await apis.realtime(draft, body(input.params ?? {}), { truncate: true }).catch(withDetail)
+    const identity = draft.auth === 'EXTERNAL' ? await externalAuth.verify(draft.externalAuth, c.req.header(TEST_CREDENTIAL_HEADER)).catch(error => {
+      // A bad test token does not mean the administrator's own session has expired.
+      if (error instanceof HttpError && error.status === 401) throw bad(error.message)
+      throw error
+    }) : undefined
+    const rows = await apis.realtime(draft, body(input.params ?? {}), { truncate: true, identity }).catch(withDetail)
     return admin(c, { elapsedMs: Math.round(performance.now() - started), count: rows.length, rows })
   })
   app.get('/admin/apis/:id', c => admin(c, apis.get(id(c.req.param('id')))))
@@ -251,11 +259,15 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     const requestId = c.get('requestId')
     const api = apis.findOpen(c.req.path, c.req.method)
     if (!api) throw notFound('接口不存在或未启用')
+    if (api.auth === 'EXTERNAL') c.header('Cache-Control', 'private, no-store')
     let count = 0
     let error: string | null = null
     try {
+      if (!['PUBLIC', 'API_KEY', 'EXTERNAL'].includes(api.auth)) throw new HttpError(503, '访问方式无效，请重新配置接口')
       if (api.auth === 'API_KEY' && !auth.checkKey(c.req.header('X-API-Key'))) throw unauthorized('API Key 无效')
       if (!userAgentAllowed(api.userAgents, c.req.header('User-Agent'))) throw forbidden('User-Agent 不被允许')
+      const identity = api.auth === 'EXTERNAL'
+        ? await externalAuth.verify(api.externalAuth, api.externalAuth ? c.req.header(api.externalAuth.inputHeader) : undefined) : undefined
       const input: JsonObject = api.method === 'GET' ? c.req.query() : await readJson(c)
       const paging = pagination(api, input)
       if (api.mode === 'REALTIME' && activeQueries >= config.maxConcurrentQueries) throw new HttpError(503, '服务繁忙，请稍后再试')
@@ -264,11 +276,11 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       let total: number | undefined
       try {
         if (paging.page !== undefined && paging.pageSize !== undefined) {
-          const result = await apis.queryPage(api, paging.input, paging.page, paging.pageSize)
+          const result = await apis.queryPage(api, paging.input, paging.page, paging.pageSize, identity)
           rows = result.rows
           total = result.total
         } else {
-          rows = await apis.query(api, paging.input)
+          rows = await apis.query(api, paging.input, identity)
         }
       } finally {
         activeQueries--

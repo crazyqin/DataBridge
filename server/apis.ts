@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { Cron } from 'croner'
-import type { Config } from './config.ts'
+import { decrypt, encrypt, type Config } from './config.ts'
 import { now, transaction, type Db } from './db.ts'
-import { bad, conflict, HttpError, notFound } from './errors.ts'
+import { bad, conflict, forbidden, HttpError, notFound } from './errors.ts'
+import { AUTH_PARAM_PREFIX, validateExternalAuth, type ExternalAuthConfig, type QueryIdentity } from './external-auth.ts'
 import { choice, flag, integer, list, NAME, names, text } from './input.ts'
 import { isObject, parse, stringify, type Json, type JsonObject } from './json.ts'
 import { runQuery, SourceError } from './query.ts'
@@ -19,7 +20,8 @@ export interface Api {
   code: string
   path: string
   method: 'GET' | 'POST'
-  auth: 'API_KEY' | 'PUBLIC'
+  auth: 'API_KEY' | 'PUBLIC' | 'EXTERNAL'
+  externalAuth: ExternalAuthConfig | null
   userAgents: string[]
   mode: Mode
   datasourceId: number | null
@@ -55,14 +57,16 @@ function withRemark(row: Row, remark: string): Row {
 
 interface ApiRow {
   id: number; name: string; code: string; path: string; method: Api['method']; auth: Api['auth']; user_agents: string
+  external_auth: string | null
   mode: Mode; datasource_id: number | null; sql_text: string | null; params: string; fields: string; filters: string
   key_fields: string; cron: string | null; cron_timezone: string | null; allow_empty: number; timeout_seconds: number; max_rows: number; enabled: number
   version: number; sync_at: string | null; sync_status: string | null; sync_count: number | null; sync_error: string | null
   created_at: string; updated_at: string
 }
 
-const toApi = (row: ApiRow): Api => ({
+const toApi = (row: ApiRow, config: Config): Api => ({
   id: row.id, name: row.name, code: row.code, path: row.path, method: row.method, auth: row.auth,
+  externalAuth: row.external_auth ? parse(decrypt(config.secretKey, row.external_auth)) as unknown as ExternalAuthConfig : null,
   userAgents: JSON.parse(row.user_agents), mode: row.mode, datasourceId: row.datasource_id, sql: row.sql_text,
   params: JSON.parse(row.params), fields: JSON.parse(row.fields), filters: JSON.parse(row.filters),
   keyFields: JSON.parse(row.key_fields), cron: row.cron, cronTimezone: row.cron_timezone, allowEmpty: row.allow_empty === 1,
@@ -127,18 +131,18 @@ export class Apis {
   // ---- configuration ----
 
   list(): Api[] {
-    return (this.db.prepare('SELECT * FROM api ORDER BY id DESC').all() as unknown as ApiRow[]).map(row => this.withSchedule(toApi(row)))
+    return (this.db.prepare('SELECT * FROM api ORDER BY id DESC').all() as unknown as ApiRow[]).map(row => this.withSchedule(toApi(row, this.config)))
   }
 
   get(id: number): Api {
     const row = this.db.prepare('SELECT * FROM api WHERE id = ?').get(id) as ApiRow | undefined
     if (!row) throw notFound('API 不存在')
-    return this.withSchedule(toApi(row))
+    return this.withSchedule(toApi(row, this.config))
   }
 
   findOpen(path: string, method: string): Api | undefined {
     const row = this.db.prepare('SELECT * FROM api WHERE path = ? AND method = ? AND enabled = 1').get(path, method) as ApiRow | undefined
-    return row && toApi(row)
+    return row && toApi(row, this.config)
   }
 
   private withSchedule(api: Api): Api {
@@ -174,7 +178,8 @@ export class Apis {
       code: text(input, 'code', '接口编码', { max: 100, pattern: /^[A-Za-z][A-Za-z0-9_]*$/ }),
       path: text(input, 'path', '接口路径', { max: 300, pattern: /^\/open(\/[A-Za-z0-9_-]+)+$/ }),
       method: choice(input, 'method', '请求方式', ['GET', 'POST'] as const, 'GET'),
-      auth: choice(input, 'auth', '访问方式', ['API_KEY', 'PUBLIC'] as const, 'API_KEY'),
+      auth: choice(input, 'auth', '访问方式', ['API_KEY', 'PUBLIC', 'EXTERNAL'] as const, 'API_KEY'),
+      externalAuth: input.auth === 'EXTERNAL' ? validateExternalAuth(input.externalAuth) : null,
       userAgents: userAgentRules(input),
       mode,
       datasourceId: sourced ? integer(input, 'datasourceId', '数据源', 1, Number.MAX_SAFE_INTEGER) : null,
@@ -191,10 +196,15 @@ export class Apis {
       maxRows: integer(input, 'maxRows', '最大行数', 1, 100_000, 10_000),
       enabled: flag(input, 'enabled', '启用状态', false),
     }
+    const authBindings = values.externalAuth?.bindings ?? []
+    if (authBindings.length && mode !== 'REALTIME') throw bad('身份参数映射只支持实时查询；其他模式可仅验证身份')
+    if (values.auth === 'EXTERNAL' && values.params.some(param => param.name.startsWith(AUTH_PARAM_PREFIX))) {
+      throw bad(`${AUTH_PARAM_PREFIX} 开头的参数由外部身份验证提供，不能声明为请求参数`)
+    }
     if (values.datasourceId !== null) this.sources.get(values.datasourceId)
     if (values.sql !== null) {
       const { names: used } = parseSql(values.sql)
-      const declared = values.params.map(param => param.name)
+      const declared = [...values.params, ...authBindings].map(param => param.name)
       const undeclared = used.find(name => !declared.includes(name))
       if (undeclared) throw bad(mode === 'SNAPSHOT' ? '定时同步的 SQL 不能包含参数' : `SQL 使用了未定义的参数 :${undeclared}`)
       const unused = declared.find(name => !used.includes(name))
@@ -226,7 +236,8 @@ export class Apis {
     const time = now()
     const columns = [v.name, v.code, v.path, v.method, v.auth, stringify(v.userAgents), v.mode, v.datasourceId, v.sql,
       stringify(v.params), stringify(v.fields), stringify(v.filters), stringify(v.keyFields), v.cron, v.cronTimezone, v.allowEmpty ? 1 : 0,
-      v.timeoutSeconds, v.maxRows, v.enabled ? 1 : 0]
+      v.timeoutSeconds, v.maxRows, v.enabled ? 1 : 0,
+      v.externalAuth ? encrypt(this.config.secretKey, stringify(v.externalAuth)) : null]
     const saved = transaction(this.db, () => {
       if (this.db.prepare('SELECT 1 FROM api WHERE code = ? AND id IS NOT ?').get(v.code, id ?? null)) throw conflict('接口编码已存在')
       if (this.db.prepare('SELECT 1 FROM api WHERE path = ? AND method = ? AND id IS NOT ?').get(v.path, v.method, id ?? null)) {
@@ -234,8 +245,8 @@ export class Apis {
       }
       if (id === undefined) {
         const result = this.db.prepare(`INSERT INTO api (name, code, path, method, auth, user_agents, mode, datasource_id, sql_text,
-          params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
+          params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, external_auth, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
         return Number(result.lastInsertRowid)
       }
       const version = integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER)
@@ -243,7 +254,7 @@ export class Apis {
       if (current.version !== version) throw conflict('API 配置已被修改，请刷新后再保存')
       this.db.prepare(`UPDATE api SET name = ?, code = ?, path = ?, method = ?, auth = ?, user_agents = ?, mode = ?,
         datasource_id = ?, sql_text = ?, params = ?, fields = ?, filters = ?, key_fields = ?, cron = ?, cron_timezone = ?, allow_empty = ?,
-        timeout_seconds = ?, max_rows = ?, enabled = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(...columns, time, id)
+        timeout_seconds = ?, max_rows = ?, enabled = ?, external_auth = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(...columns, time, id)
       if (current.mode !== v.mode) {
         this.db.prepare('DELETE FROM api_row WHERE api_id = ?').run(id)
         this.db.prepare('UPDATE api SET sync_at = NULL, sync_status = NULL, sync_count = NULL, sync_error = NULL WHERE id = ?').run(id)
@@ -497,13 +508,15 @@ export class Apis {
 
   // ---- open queries ----
 
-  async query(api: Api, input: JsonObject): Promise<Row[]> {
-    return api.mode === 'REALTIME' ? this.realtime(api, input) : this.local(api, input)
+  async query(api: Api, input: JsonObject, identity?: QueryIdentity): Promise<Row[]> {
+    if (api.auth === 'EXTERNAL' && !identity) throw forbidden('缺少已验证的身份')
+    return api.mode === 'REALTIME' ? this.realtime(api, input, { identity }) : this.local(api, input)
   }
 
-  async queryPage(api: Api, input: JsonObject, page: number, pageSize: number): Promise<PageResult> {
+  async queryPage(api: Api, input: JsonObject, page: number, pageSize: number, identity?: QueryIdentity): Promise<PageResult> {
+    if (api.auth === 'EXTERNAL' && !identity) throw forbidden('缺少已验证的身份')
     if (api.mode !== 'REALTIME') return this.localPage(api, input, page, pageSize)
-    const { sql, values, pool } = this.realtimeStatement(api, input)
+    const { sql, values, pool } = this.realtimeStatement(api, input, identity)
     const source = `(${sql}) AS databridge_source`
     const count = await runQuery(pool, `SELECT count(*)::text AS total FROM ${source}`, values,
       { timeoutSeconds: api.timeoutSeconds, maxRows: 1 })
@@ -515,25 +528,34 @@ export class Apis {
   }
 
   /** Runs the API's SQL with request parameters; used by open calls and by the editor's test button. */
-  async realtime(api: Pick<Api, 'datasourceId' | 'sql' | 'params' | 'timeoutSeconds' | 'maxRows'>, input: JsonObject,
-                 options: { truncate?: boolean } = {}): Promise<Row[]> {
-    const { sql, values, pool } = this.realtimeStatement(api, input)
+  async realtime(api: Pick<Api, 'auth' | 'externalAuth' | 'datasourceId' | 'sql' | 'params' | 'timeoutSeconds' | 'maxRows'>, input: JsonObject,
+                 options: { truncate?: boolean; identity?: QueryIdentity } = {}): Promise<Row[]> {
+    const { sql, values, pool } = this.realtimeStatement(api, input, options.identity)
     const result = await runQuery(pool, sql, values, api)
     if (result.truncated && !options.truncate) throw new HttpError(422, `查询结果超过最大行数 ${api.maxRows}`)
     return result.rows
   }
 
-  private realtimeStatement(api: Pick<Api, 'datasourceId' | 'sql' | 'params'>, input: JsonObject) {
+  private realtimeStatement(api: Pick<Api, 'auth' | 'externalAuth' | 'datasourceId' | 'sql' | 'params'>, input: JsonObject, identity?: QueryIdentity) {
+    const authBindings = api.auth === 'EXTERNAL' ? api.externalAuth?.bindings ?? [] : []
+    if (api.auth === 'EXTERNAL') {
+      if (!identity) throw forbidden('缺少已验证的身份')
+      if (Object.keys(input).some(name => name.startsWith(AUTH_PARAM_PREFIX))) throw bad('身份参数由外部验证提供，不能通过请求传入')
+    }
     const unknown = Object.keys(input).find(key => !api.params.some(param => param.name === key))
     if (unknown) throw bad(`未定义的参数 ${unknown}`)
     const parsed = parseSql(api.sql!)
     const values = parsed.names.map(name => {
+      if (authBindings.some(binding => binding.name === name)) {
+        if (!identity || !Object.hasOwn(identity, name) || identity[name] === null) throw forbidden('缺少必要身份参数')
+        return toPg(identity[name])
+      }
       const param = api.params.find(p => p.name === name)!
       const value = convertOptional(own(input, name), param)
       if (param.required && (value === null || value === '')) throw bad(`缺少参数 ${name}`)
       return toPg(value)
     })
-    const sql = positional(parsed, name => PG_TYPES[api.params.find(p => p.name === name)!.type])
+    const sql = positional(parsed, name => PG_TYPES[[...api.params, ...authBindings].find(p => p.name === name)!.type])
     const { pool } = this.sources.pool(api.datasourceId!)
     return { sql, values, pool }
   }

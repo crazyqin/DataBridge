@@ -97,6 +97,7 @@ const MIGRATIONS = [
   );
   CREATE INDEX sync_log_api_id ON sync_log (api_id, id DESC);
   `,
+  `ALTER TABLE api ADD COLUMN external_auth TEXT;`,
 ]
 
 export type Db = DatabaseSync

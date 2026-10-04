@@ -54,9 +54,9 @@ async function closeForm() {
         <el-table-column label="模式" width="100">
           <template #default="{ row }">{{ MODE_LABELS[row.mode as Api['mode']] }}</template>
         </el-table-column>
-        <el-table-column label="访问" width="90">
+        <el-table-column label="访问" width="130">
           <template #default="{ row }">
-            <el-tag :type="row.auth === 'PUBLIC' ? 'info' : 'warning'">{{ row.auth === 'PUBLIC' ? '公开' : 'API Key' }}</el-tag>
+            <el-tag :type="row.auth === 'PUBLIC' ? 'info' : 'warning'">{{ row.auth === 'PUBLIC' ? '公开' : row.auth === 'EXTERNAL' ? '外部身份验证' : row.auth === 'API_KEY' ? 'API Key' : '需重新配置' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="80">

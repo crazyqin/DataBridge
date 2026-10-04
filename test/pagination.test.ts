@@ -30,6 +30,7 @@ test('existing row databases gain an empty remark without losing records', () =>
     assert.deepEqual({ ...upgraded.prepare('SELECT row_key, data, remark FROM api_row').get() },
       { row_key: 'old', data: '{"name":"kept"}', remark: '' })
     assert.ok(upgraded.prepare('PRAGMA table_info(api)').all().some((column: any) => column.name === 'cron_timezone'))
+    assert.ok(upgraded.prepare('PRAGMA table_info(api)').all().some((column: any) => column.name === 'external_auth'))
     assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE name = 'sync_log'").get())
   } finally {
     upgraded.close()
