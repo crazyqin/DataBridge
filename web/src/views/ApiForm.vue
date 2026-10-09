@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
-import { confirm, defaultExternalAuth, formatTimeInZone, MODE_LABELS, request, type Api, type Datasource } from '../api'
+import { confirm, defaultExternalAuth, formatTimeInZone, MODE_LABELS, request, RequestError, type Api, type Datasource, type ExternalAuthTrace as AuthTrace } from '../api'
 import FieldTable from './FieldTable.vue'
 import ExternalAuthForm from './ExternalAuthForm.vue'
+import ExternalAuthTrace from './ExternalAuthTrace.vue'
 import SyncHistoryDialog from './SyncHistoryDialog.vue'
 
 const props = defineProps<{ api: Api | null }>()
@@ -27,6 +28,8 @@ const lists = ref(listsOf(form.value))
 const sources = ref<Datasource[]>([])
 const saving = ref(false)
 const testing = ref(false)
+const testingAuth = ref(false)
+const authTrace = ref<AuthTrace>()
 const showHistory = ref(false)
 const testParams = ref('{}')
 const testCredential = ref('')
@@ -35,7 +38,7 @@ const externalConfig = computed({
   get: () => form.value.externalAuth ?? defaultExternalAuth(),
   set: value => { form.value.externalAuth = value },
 })
-const result = ref<{ elapsedMs: number; count: number; rows: unknown[] }>()
+const result = ref<{ elapsedMs: number; count: number; rows: unknown[]; externalAuthTrace?: AuthTrace }>()
 
 const sourced = computed(() => form.value.mode !== 'MANUAL')
 
@@ -114,14 +117,42 @@ async function test() {
   }
   testing.value = true
   result.value = undefined
+  authTrace.value = undefined
   try {
     result.value = await request('/admin/apis/test', {
       method: 'POST',
       rawBody: `{"api":${JSON.stringify(api)},"params":${testParams.value.trim() || '{}'}}`,
       headers: api.auth === 'EXTERNAL' ? { 'X-DataBridge-Test-Credential': (api.externalAuth?.inputPrefix ?? '') + testCredential.value } : undefined,
     })
+    authTrace.value = result.value?.externalAuthTrace
+  } catch (error) {
+    if (error instanceof RequestError) authTrace.value = error.externalAuthTrace
+    else ElMessage.error(error instanceof Error ? error.message : '测试请求失败')
   } finally {
     testing.value = false
+    testCredential.value = ''
+  }
+}
+
+async function testAuth() {
+  let externalAuth
+  try { externalAuth = externalForm.value?.value() ?? form.value.externalAuth } catch (error) {
+    return ElMessage.error((error as Error).message)
+  }
+  testingAuth.value = true
+  authTrace.value = undefined
+  result.value = undefined
+  try {
+    const response = await request<{ externalAuthTrace: AuthTrace }>('/admin/external-auth/test', {
+      method: 'POST', body: { externalAuth },
+      headers: { 'X-DataBridge-Test-Credential': (externalAuth?.inputPrefix ?? '') + testCredential.value },
+    })
+    authTrace.value = response.externalAuthTrace
+  } catch (error) {
+    if (error instanceof RequestError) authTrace.value = error.externalAuthTrace
+    else ElMessage.error(error instanceof Error ? error.message : '测试请求失败')
+  } finally {
+    testingAuth.value = false
     testCredential.value = ''
   }
 }
@@ -233,16 +264,18 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
       </el-form-item>
     </el-form>
 
-    <template v-if="sourced">
-      <el-divider content-position="left">测试当前 SQL（不需要先保存）</el-divider>
+    <template v-if="sourced || form.auth === 'EXTERNAL'">
+      <el-divider content-position="left">{{ form.auth === 'EXTERNAL' ? sourced ? '测试身份验证与 SQL' : '测试身份验证' : '测试当前 SQL' }}（不需要先保存）</el-divider>
       <div class="toolbar">
-        <el-input v-if="form.mode === 'REALTIME'" v-model="testParams" class="mono" placeholder='测试参数 JSON，如 {"id": "10001"}' style="max-width: 480px" />
+        <el-input v-if="sourced && form.mode === 'REALTIME'" v-model="testParams" class="mono" placeholder='测试参数 JSON，如 {"id": "10001"}' style="max-width: 480px" />
         <el-input v-if="form.auth === 'EXTERNAL'" v-model="testCredential" type="password" autocomplete="off"
                   placeholder="测试凭证（不含前缀），本次测试后清空" style="max-width: 340px" />
-        <el-button :loading="testing" @click="test">执行测试</el-button>
+        <el-button v-if="form.auth === 'EXTERNAL'" :loading="testingAuth" :disabled="testing" @click="testAuth">测试身份验证</el-button>
+        <el-button v-if="sourced" :loading="testing" :disabled="testingAuth" @click="test">执行 SQL 测试</el-button>
         <span v-if="result" class="muted">返回 {{ result.count }} 行 · {{ result.elapsedMs }}ms{{ result.count === form.maxRows ? '（已截断到最大行数）' : '' }}</span>
       </div>
       <pre v-if="result" class="result">{{ JSON.stringify(result.rows, null, 2) }}</pre>
+      <ExternalAuthTrace v-if="authTrace && form.auth === 'EXTERNAL'" :trace="authTrace" />
     </template>
   </el-card>
   <SyncHistoryDialog v-if="showHistory && saved?.id" :api="saved" @close="showHistory = false" />

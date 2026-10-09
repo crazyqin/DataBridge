@@ -3,6 +3,7 @@ import { bad, HttpError, unauthorized } from './errors.ts'
 import { body as object, choice, integer, list, NAME, text } from './input.ts'
 import { isObject, parse, stringify, type Json, type JsonObject } from './json.ts'
 import { convert, FIELD_TYPES, identity, type FieldType } from './values.ts'
+import { AUTH_PREVIEW_BYTES, authRedactor, readAuthResponse, transportDetail, type ExternalAuthTrace } from './auth-diagnostics.ts'
 
 export const AUTH_PARAM_PREFIX = '_auth_'
 export const TEST_CREDENTIAL_HEADER = 'X-DataBridge-Test-Credential'
@@ -179,17 +180,28 @@ export class ExternalAuth {
     this.maxConcurrent = maxConcurrent
   }
 
-  async verify(config: ExternalAuthConfig | null, credential: string | undefined): Promise<QueryIdentity> {
-    if (!config) throw new HttpError(503, '尚未配置外部身份验证')
-    if (!credential || !credential.startsWith(config.inputPrefix)) throw unauthorized('缺少或无效的身份凭证')
-    const token = credential.slice(config.inputPrefix.length)
-    if (!token || token.length > 4096 || /[\s,\x00-\x1f\x7f]/.test(token)) throw unauthorized('缺少或无效的身份凭证')
-    if (this.active >= this.maxConcurrent) throw new HttpError(503, '身份验证繁忙，请稍后再试')
-    this.active++
+  async verify(config: ExternalAuthConfig | null, credential: string | undefined,
+    diagnostic?: (trace: ExternalAuthTrace) => void): Promise<QueryIdentity> {
+    const started = performance.now()
+    const trace: ExternalAuthTrace = { at: new Date().toISOString(), elapsedMs: 0, ok: false, error: null, detail: null,
+      request: null, response: null, checks: [] }
+    const redact = authRedactor(config, credential)
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), config.timeoutSeconds * 1000)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let active = false
     let response: Response | undefined
     try {
+      if (!config) throw new HttpError(503, '尚未配置外部身份验证')
+      if (!credential || !credential.startsWith(config.inputPrefix)) {
+        trace.detail = `请求未提供有效凭证，请检查来源 Header ${config.inputHeader} 和来源前缀配置`
+        throw unauthorized('缺少或无效的身份凭证')
+      }
+      const token = credential.slice(config.inputPrefix.length)
+      if (!token || token.length > 4096 || /[\s,\x00-\x1f\x7f]/.test(token)) throw unauthorized('缺少或无效的身份凭证')
+      if (this.active >= this.maxConcurrent) throw new HttpError(503, '身份验证繁忙，请稍后再试')
+      this.active++
+      active = true
+      timer = setTimeout(() => controller.abort(), config.timeoutSeconds * 1000)
       const headers = new Headers(config.headers)
       const now = Date.now()
       // Legacy saved configurations have no dynamicHeaders; they retain their behavior.
@@ -218,61 +230,109 @@ export class ExternalAuth {
             [key, value === null ? '' : JSON.isRawJSON(value) ? value.rawJSON : String(value)])).toString()
         }
       }
+      if (diagnostic) {
+        const safeHeaders = redact.headers(headers, true)
+        const safeBody = requestBody === undefined ? null : redact.body(requestBody, headers.get('Content-Type') ?? '')
+        trace.request = { method: config.method, url: redact.url(url.toString()), headers: safeHeaders,
+          body: safeBody?.text ?? null, truncated: safeBody?.truncated ?? false }
+      }
       response = await fetch(url, {
         method: config.method, headers, body: requestBody,
-        redirect: 'error', // Credentials must not be forwarded to a redirect target.
+        redirect: 'manual', // Record the redirect response without forwarding credentials.
         signal: controller.signal,
       })
-      if (response.status === 401 || response.status === 403) throw unauthorized('身份凭证无效或已过期')
-      if (response.status !== config.successStatus) throw new HttpError(502, '外部身份验证服务异常')
+      trace.response = { status: response.status, statusText: redact.text(response.statusText), headers: diagnostic ? redact.headers(response.headers) : {},
+        body: null, truncated: false }
       const conditions = [
         ...(config.successPath ? [{ path: config.successPath, value: config.successValue }] : []),
         ...(config.successConditions ?? []),
       ]
-      if (!conditions.length && !config.bindings.length) return {}
-      if (Number(response.headers.get('Content-Length')) > MAX_RESPONSE_BYTES || !response.body) throw new HttpError(502, '外部身份验证响应无效')
-      const reader = response.body.getReader()
-      const chunks: Uint8Array[] = []
-      let size = 0
-      try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          size += value.byteLength
-          if (size > MAX_RESPONSE_BYTES) throw new HttpError(502, '外部身份验证响应过大')
-          chunks.push(value)
+      const needsJson = response.status === config.successStatus && !!(conditions.length || config.bindings.length)
+      let raw = ''
+      let oversized = Number(response.headers.get('Content-Length')) > MAX_RESPONSE_BYTES
+      if (needsJson || diagnostic) {
+        try {
+          const content = await readAuthResponse(response, needsJson ? MAX_RESPONSE_BYTES : AUTH_PREVIEW_BYTES)
+          raw = content.text
+          oversized ||= content.truncated
+          if (diagnostic) {
+            const preview = redact.body(raw, response.headers.get('Content-Type') ?? '')
+            trace.response.body = preview.text
+            trace.response.truncated = content.truncated || preview.truncated
+          }
+        } catch (error) {
+          trace.detail = redact.text(`验证服务响应体读取失败：${transportDetail(error)}`)
+          // Diagnostics must not change HTTP-only verification or a known rejection.
+          if (needsJson) throw error
         }
-      } finally {
-        await reader.cancel().catch(() => {})
-        reader.releaseLock()
       }
-      const result = parse(Buffer.concat(chunks).toString('utf8'))
+      if (response.status === 401 || response.status === 403) {
+        trace.detail = `验证服务返回 HTTP ${response.status}，拒绝了本次鉴权`
+        throw unauthorized('身份凭证无效或已过期')
+      }
+      if (response.status !== config.successStatus) {
+        trace.detail = `验证服务返回 HTTP ${response.status}，配置要求 HTTP ${config.successStatus}`
+        if (response.status >= 300 && response.status < 400) trace.detail += '；未跟随重定向，请检查验证地址和响应 Location'
+        throw new HttpError(502, '外部身份验证服务异常')
+      }
+      if (!needsJson) { trace.ok = true; return {} }
+      if (oversized) {
+        trace.detail = '验证服务响应超过 64 KiB 上限'
+        throw new HttpError(502, '外部身份验证响应过大')
+      }
+      if (!response.body) throw new HttpError(502, '外部身份验证响应无效')
+      let result: Json
+      try { result = parse(raw) } catch {
+        trace.detail = '验证服务返回的内容不是有效 JSON，请查看响应内容和 Content-Type'
+        throw new HttpError(502, '外部身份验证响应不是有效的 JSON')
+      }
+      if (diagnostic) trace.checks = conditions.map(condition => {
+        const actual = readPath(result, condition.path)
+        return { path: condition.path, expected: redact.json(condition.value, condition.path),
+          actual: actual === undefined ? null : redact.json(actual, condition.path), exists: actual !== undefined,
+          matched: actual !== undefined && identity(actual) === identity(condition.value) }
+      })
       for (const condition of conditions) {
         const actual = readPath(result, condition.path)
-        if (actual === undefined) throw new HttpError(502, '外部身份验证响应缺少成功判定字段')
-        if (identity(actual) !== identity(condition.value)) throw unauthorized('身份凭证未通过验证')
+        if (actual === undefined) {
+          trace.detail = `响应缺少成功判定字段 ${condition.path}`
+          throw new HttpError(502, '外部身份验证响应缺少成功判定字段')
+        }
+        if (identity(actual) !== identity(condition.value)) {
+          trace.detail = `成功条件 ${condition.path} 不匹配，请检查判定值和 JSON 类型`
+          throw unauthorized('身份凭证未通过验证')
+        }
       }
       const bindings: QueryIdentity = Object.create(null)
       for (const binding of config.bindings) {
         const value = readPath(result, binding.path)
         if (value === undefined || value === null || typeof value === 'string' && !value.trim()) {
+          trace.detail = `响应缺少身份字段 ${binding.path}，无法映射到 ${binding.name}`
           throw new HttpError(502, '外部身份验证响应缺少必要身份字段')
         }
         try {
           bindings[binding.name] = convert(value, binding.type, binding.name)
         } catch {
+          trace.detail = `身份字段 ${binding.path} 无法转换为 ${binding.type}`
           throw new HttpError(502, '外部身份验证响应的身份字段类型无效')
         }
       }
+      trace.ok = true
       return { ...bindings }
     } catch (error) {
-      if (controller.signal.aborted) throw new HttpError(504, '外部身份验证超时')
-      if (error instanceof HttpError) throw error
-      throw new HttpError(502, '外部身份验证服务异常')
+      const failure = error instanceof HttpError ? error : controller.signal.aborted ? new HttpError(504, '外部身份验证超时')
+        : new HttpError(502, '外部身份验证服务异常')
+      trace.error = failure.message
+      if (failure.status === 504) trace.detail = `验证请求在 ${config?.timeoutSeconds} 秒内未完成`
+      else if (!trace.detail) trace.detail = error instanceof HttpError ? error.message : `验证服务连接或读取失败：${transportDetail(error)}`
+      trace.detail = redact.body(trace.detail).text
+      throw failure
     } finally {
       if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {})
       clearTimeout(timer)
-      this.active--
+      if (active) this.active--
+      trace.elapsedMs = Math.round(performance.now() - started)
+      diagnostic?.(trace)
     }
   }
 }

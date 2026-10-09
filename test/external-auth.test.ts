@@ -15,6 +15,7 @@ import { parse, stringify, type JsonObject } from '../server/json.ts'
 import { Logs } from '../server/logs.ts'
 import { Sources } from '../server/sources.ts'
 import { ExternalAuth, validateExternalAuth, type ExternalAuthConfig } from '../server/external-auth.ts'
+import type { ExternalAuthTrace } from '../server/auth-diagnostics.ts'
 
 async function provider(handler: (req: IncomingMessage, res: ServerResponse) => void) {
   const server = createServer(handler)
@@ -63,6 +64,221 @@ const signingHeaders: JsonObject = {
     { type: 'timestamp', unit: 'milliseconds' },
   ] },
 }
+
+test('verification diagnostics show response failures and conditions while redacting credentials', async t => {
+  const settings = validateExternalAuth(authConfig('https://identity.example.com/verify?audience=orders', {
+    method: 'GET', tokenLocation: 'query', tokenName: 'userToken', inputPrefix: 'Bearer ',
+    headers: { 'X-Service-Key': 'private-service-key', 'X-Client-Id': 'example-client' },
+    dynamicHeaders: signingHeaders, successPath: 'code', successValue: 200,
+    successConditions: [{ path: 'data.state', value: 'A' }], bindings: [],
+  }))
+  let upstreamStatus = 200
+  let upstreamBody = '{"code":200,"data":{"state":"A","token":"rotated-private-token","password":"private-password"}}'
+  let failure: Error | undefined
+  t.mock.method(globalThis, 'fetch', async () => {
+    if (failure) throw failure
+    return new Response(upstreamBody, { status: upstreamStatus, headers: {
+      'Content-Type': 'application/json', 'Set-Cookie': 'session=private-cookie',
+      'Location': 'https://identity.example.com/next?userToken=redirect-private-token',
+    } })
+  })
+  const verifier = new ExternalAuth(20)
+  let trace: ExternalAuthTrace | undefined
+  const verify = () => verifier.verify(settings, 'Bearer a+b/c=&admin=true', value => { trace = value })
+  await t.test('successful signing requests and response tokens are redacted', async () => {
+    assert.deepEqual(await verify(), {})
+    assert.equal(trace!.ok, true)
+    assert.equal(trace!.request!.headers['x-call-time'].length, 13)
+    assert.equal(trace!.request!.headers['x-client-id'], 'example-client')
+    assert.equal(trace!.request!.headers['x-digest'], '[REDACTED]')
+    assert.equal(trace!.request!.headers['x-service-key'], '[REDACTED]')
+    assert.equal(trace!.response!.headers['set-cookie'], '[REDACTED]')
+    assert.deepEqual(trace!.checks.map(check => [check.path, check.actual, check.matched]), [['code', 200, true], ['data.state', 'A', true]])
+    assert.doesNotMatch(JSON.stringify(trace), /a\+b\/c=|rotated-private-token|private-password|private-service-key|private-cookie|redirect-private-token|päss secret/)
+  })
+  await t.test('HTTP failures retain status and a bounded response preview', async () => {
+    upstreamStatus = 500
+    upstreamBody = '{"msg":"provider unavailable","token":"rotated-private-token"}'
+    await assert.rejects(verify(), status(502))
+    assert.equal(trace!.response!.status, 500)
+    assert.match(trace!.detail!, /HTTP 500.*HTTP 200/)
+    assert.match(trace!.response!.body!, /provider unavailable/)
+    assert.doesNotMatch(trace!.response!.body!, /rotated-private-token/)
+    upstreamBody = 'x'.repeat(100_000)
+    await assert.rejects(verify(), status(502))
+    assert.equal(trace!.response!.truncated, true)
+    assert.ok(Buffer.byteLength(trace!.response!.body!) <= 8192)
+  })
+  await t.test('malformed JSON and missing or wrong state have specific diagnostics', async () => {
+    upstreamStatus = 200
+    upstreamBody = '<html>identity gateway failure</html>'
+    await assert.rejects(verify(), status(502))
+    assert.match(trace!.detail!, /不是有效 JSON/)
+    assert.match(trace!.response!.body!, /identity gateway failure/)
+    upstreamBody = '{"code":200,"data":{"state":"D"}}'
+    await assert.rejects(verify(), status(401))
+    assert.deepEqual(trace!.checks.map(check => check.matched), [true, false])
+    assert.equal(trace!.checks[1].actual, 'D')
+    upstreamBody = '{"code":200,"data":{}}'
+    await assert.rejects(verify(), status(502))
+    assert.equal(trace!.checks[1].exists, false)
+    assert.match(trace!.detail!, /data.state/)
+  })
+  await t.test('redirects and connection failures provide actionable admin details', async () => {
+    upstreamStatus = 302
+    upstreamBody = 'redirected'
+    await assert.rejects(verify(), status(502))
+    assert.equal(trace!.response!.status, 302)
+    assert.match(trace!.detail!, /未跟随重定向/)
+    const cause = Object.assign(new Error('DNS lookup failed'), { code: 'ENOTFOUND' })
+    failure = new TypeError('fetch failed', { cause })
+    await assert.rejects(verify(), status(502))
+    assert.equal(trace!.response, null)
+    assert.match(trace!.detail!, /ENOTFOUND/)
+  })
+})
+
+test('admin identity tests and persisted call details are available without exposing traces to callers', async t => {
+  let responseStatus = 500
+  let responseBody = '{"msg":"upstream failure details","token":"private-rotated-token"}'
+  let calls = 0
+  const upstream = await provider((_req, res) => {
+    calls++
+    res.writeHead(responseStatus, { 'Content-Type': 'application/json' })
+    res.end(responseBody)
+  })
+  const f = fixture()
+  const logs = new Logs(f.db)
+  const definition = authConfig(upstream.url, { method: 'GET', tokenLocation: 'query', tokenName: 'userToken',
+    successPath: 'code', successValue: 200, successConditions: [{ path: 'data.state', value: 'A' }], bindings: [] })
+  let cookie = ''
+  const call = async (path: string, value?: unknown, credential?: string) => {
+    const response = await f.app.request(path, {
+      method: value === undefined ? 'GET' : 'POST', headers: {
+        cookie, 'X-Requested-With': 'DataBridge', 'Content-Type': 'application/json',
+        ...(credential ? { 'X-DataBridge-Test-Credential': credential } : {}),
+      }, body: value === undefined ? undefined : JSON.stringify(value),
+    })
+    cookie = response.headers.get('set-cookie')?.split(';')[0] ?? cookie
+    return { status: response.status, body: await response.json() }
+  }
+  try {
+    const api = f.apis.save(undefined, { name: 'diagnostics', code: 'diagnostics', path: '/open/diagnostics', mode: 'MANUAL',
+      auth: 'EXTERNAL', externalAuth: definition, enabled: true, fields: [{ name: 'name', type: 'string' }] })
+    f.apis.createRow(api.id, { name: 'business data' })
+    await t.test('open errors stay generic and details require an admin session', async () => {
+      const response = await f.app.request('/open/diagnostics', { headers: { 'X-Access-Token': 'private-user-token' } })
+      const result = await response.json()
+      assert.equal(response.status, 502)
+      assert.equal(result.externalAuthTrace, undefined)
+      assert.doesNotMatch(JSON.stringify(result), /upstream failure details|private-user-token/)
+      const list = logs.list({})
+      assert.equal(list.items[0].hasExternalAuth, true)
+      assert.equal(list.items[0].requestId, result.request_id)
+      assert.doesNotMatch(JSON.stringify(list), /upstream failure details|private-user-token/)
+      assert.equal((await call(`/admin/logs/${list.items[0].id}/external-auth`)).status, 401)
+      assert.equal((await call('/admin/external-auth/test', { externalAuth: definition }, 'private-user-token')).status, 401)
+      await f.auth.bootstrap()
+      assert.equal((await call('/auth/login', { username: 'admin', password: 'test-admin-password' })).status, 200)
+      const detail = await call(`/admin/logs/${list.items[0].id}/external-auth`)
+      assert.equal(detail.status, 200)
+      assert.equal(detail.body.response.status, 500)
+      assert.match(detail.body.response.body, /upstream failure details/)
+      assert.doesNotMatch(JSON.stringify(detail.body), /private-user-token|private-rotated-token/)
+      const stored = f.db.prepare('SELECT detail FROM request_auth_log').all()
+      assert.doesNotMatch(JSON.stringify(stored), /private-user-token|private-rotated-token/)
+    })
+    await t.test('standalone tests show failures and condition results without requiring SQL', async () => {
+      const result = await call('/admin/external-auth/test', { externalAuth: definition }, 'private-user-token')
+      assert.equal(result.status, 502)
+      assert.equal(result.body.externalAuthTrace.response.status, 500)
+      responseStatus = 200
+      responseBody = '{"code":200,"data":{"state":"D"}}'
+      const rejected = await call('/admin/external-auth/test', { externalAuth: definition }, 'private-user-token')
+      assert.equal(rejected.status, 400)
+      assert.equal(rejected.body.externalAuthTrace.checks[1].matched, false)
+      assert.equal((await call('/auth/session')).body.username, 'admin')
+      responseBody = '{"code":200,"data":{"state":"A"}}'
+      const verified = await call('/admin/external-auth/test', { externalAuth: definition }, 'private-user-token')
+      assert.equal(verified.status, 200)
+      assert.equal(verified.body.externalAuthTrace.ok, true)
+      const before = calls
+      const missing = await call('/admin/external-auth/test', { externalAuth: definition })
+      assert.equal(missing.status, 400)
+      assert.equal(missing.body.externalAuthTrace.request, null)
+      assert.equal(calls, before)
+    })
+    await t.test('SQL tests retain traces on success and validation or query errors', async () => {
+      const source = f.sources.save(undefined, { name: 'unused', host: '127.0.0.1', port: 1, database: 'unused', username: 'unused', password: 'unused' })
+      const draft = { ...api, mode: 'REALTIME', datasourceId: source.id, sql: 'SELECT 1 AS id', fields: [] }
+      const query = t.mock.method(f.apis, 'realtime', async () => [{ id: 1 }])
+      let result = await call('/admin/apis/test', { api: draft }, 'private-user-token')
+      assert.equal(result.status, 200)
+      assert.equal(result.body.externalAuthTrace.ok, true)
+      assert.deepEqual(result.body.rows, [{ id: 1 }])
+      query.mock.mockImplementation(async () => { throw new HttpError(422, 'SQL query failed') })
+      result = await call('/admin/apis/test', { api: draft }, 'private-user-token')
+      assert.equal(result.status, 422)
+      assert.equal(result.body.externalAuthTrace.ok, true)
+      responseStatus = 500
+      result = await call('/admin/apis/test', { api: draft }, 'private-user-token')
+      assert.equal(result.status, 502)
+      assert.equal(result.body.externalAuthTrace.response.status, 500)
+      query.mock.restore()
+    })
+    await t.test('stored details share the parent log retention policy', () => {
+      f.db.prepare('UPDATE request_log SET at = ?').run('2000-01-01T00:00:00.000Z')
+      logs.prune(30)
+      assert.equal(f.db.prepare('SELECT count(*) AS count FROM request_auth_log').get()!.count, 0)
+    })
+  } finally {
+    await f.close()
+    await upstream.close()
+  }
+})
+
+test('diagnostics cover custom credential locations and retain exact numeric response text', async t => {
+  let received: Request | undefined
+  t.mock.method(globalThis, 'fetch', async (url: string | URL, options: RequestInit) => {
+    received = new Request(url, options)
+    return new Response('{"active":true,"counter":9007199254740993,"ticket":"private-rotated-ticket"}', {
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+  const verifier = new ExternalAuth(1)
+  for (const tokenLocation of ['header', 'json', 'form']) {
+    const settings = validateExternalAuth(authConfig('https://identity.example.com/verify', {
+      tokenLocation, tokenName: 'ticket', body: { password: 'private-config-password', audience: 'orders' }, bindings: [],
+    }))
+    let trace: ExternalAuthTrace | undefined
+    await verifier.verify(settings, 'private-user-ticket', value => { trace = value })
+    assert.equal(received!.headers.get('ticket'), tokenLocation === 'header' ? 'private-user-ticket' : null)
+    assert.match(trace!.response!.body!, /9007199254740993/)
+    assert.doesNotMatch(JSON.stringify(trace), /private-user-ticket|private-rotated-ticket|private-config-password/)
+    assert.match(trace!.request!.body!, /orders/)
+  }
+})
+
+test('response preview failures preserve HTTP-only success and known rejections', async t => {
+  let responseStatus = 200
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({
+    start(controller) { controller.error(new Error('preview stream failed')) },
+  }), { status: responseStatus }))
+  const verifier = new ExternalAuth(1)
+  const settings = validateExternalAuth(authConfig('https://identity.example.com/verify', { successPath: '', bindings: [] }))
+  let trace: ExternalAuthTrace | undefined
+  const verify = () => verifier.verify(settings, 'private-user-token', value => { trace = value })
+  assert.deepEqual(await verify(), {})
+  assert.equal(trace!.ok, true)
+  assert.match(trace!.detail!, /preview stream failed/)
+  responseStatus = 401
+  await assert.rejects(verify(), status(401))
+  assert.equal(trace!.response!.status, 401)
+  responseStatus = 200
+  await assert.rejects(verifier.verify({ ...settings, successPath: 'active' }, 'private-user-token', value => { trace = value }), status(502))
+  assert.equal(trace!.ok, false)
+  assert.match(trace!.detail!, /preview stream failed/)
+})
 
 test('query credentials and dynamic headers match a timestamped nested digest protocol', async t => {
   const received: { method: string; headers: Record<string, string>; url: URL; body: string }[] = []

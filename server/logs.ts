@@ -1,5 +1,7 @@
-import type { Db } from './db.ts'
-import { bad } from './errors.ts'
+import { transaction, type Db } from './db.ts'
+import { bad, notFound } from './errors.ts'
+import { parse, stringify } from './json.ts'
+import type { ExternalAuthTrace } from './auth-diagnostics.ts'
 
 export interface LogEntry {
   requestId: string
@@ -10,6 +12,7 @@ export interface LogEntry {
   rowCount: number
   ok: boolean
   error: string | null
+  externalAuthTrace?: ExternalAuthTrace
 }
 
 export interface LogQuery { apiId?: string; ok?: string; from?: string; to?: string; before?: string; limit?: string }
@@ -28,9 +31,13 @@ export class Logs {
   }
 
   write(entry: LogEntry) {
-    this.db.prepare(`INSERT INTO request_log (request_id, at, api_id, mode, elapsed_ms, row_count, ok, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(entry.requestId, entry.at, entry.apiId, entry.mode, Math.round(entry.elapsedMs),
-      entry.rowCount, entry.ok ? 1 : 0, entry.error)
+    transaction(this.db, () => {
+      const result = this.db.prepare(`INSERT INTO request_log (request_id, at, api_id, mode, elapsed_ms, row_count, ok, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(entry.requestId, entry.at, entry.apiId, entry.mode, Math.round(entry.elapsedMs),
+        entry.rowCount, entry.ok ? 1 : 0, entry.error)
+      if (entry.externalAuthTrace) this.db.prepare('INSERT INTO request_auth_log (log_id, detail) VALUES (?, ?)')
+        .run(result.lastInsertRowid, stringify(entry.externalAuthTrace))
+    })
   }
 
   /** Newest first; pass the last item's id as `before` to get the next page. */
@@ -45,12 +52,20 @@ export class Logs {
     if (args.some(arg => typeof arg === 'number' && !Number.isSafeInteger(arg))) throw bad('查询条件无效')
     const limit = Math.min(Math.max(Number(query.limit) || 100, 1), 500)
     const items = this.db.prepare(`SELECT id, request_id AS requestId, at, api_id AS apiId, mode, elapsed_ms AS elapsedMs,
-      row_count AS rowCount, ok = 1 AS ok, error FROM request_log ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY id DESC LIMIT ?`).all(...args, limit) as { id: number; ok: number }[]
+      row_count AS rowCount, ok = 1 AS ok, error,
+      EXISTS (SELECT 1 FROM request_auth_log WHERE log_id = request_log.id) AS hasExternalAuth
+      FROM request_log ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY id DESC LIMIT ?`).all(...args, limit) as (Omit<LogEntry, 'externalAuthTrace' | 'ok'> & { id: number; ok: number; hasExternalAuth: number })[]
     return {
-      items: items.map(item => ({ ...item, ok: item.ok === 1 })),
+      items: items.map(item => ({ ...item, ok: item.ok === 1, hasExternalAuth: item.hasExternalAuth === 1 })),
       nextBefore: items.length === limit ? items[items.length - 1].id : null,
     }
+  }
+
+  externalAuthDetail(logId: number): ExternalAuthTrace {
+    const row = this.db.prepare('SELECT detail FROM request_auth_log WHERE log_id = ?').get(logId) as { detail: string } | undefined
+    if (!row) throw notFound('该日志没有外部身份验证详情')
+    return parse(row.detail) as unknown as ExternalAuthTrace
   }
 
   prune(retentionDays: number) {

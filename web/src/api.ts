@@ -21,6 +21,22 @@ export const defaultExternalAuth = (): ExternalAuthConfig => ({
   successStatus: 200, successPath: 'active', successValue: true, successConditions: [], timeoutSeconds: 5, bindings: [],
 })
 
+export interface ExternalAuthTrace {
+  at: string; elapsedMs: number; ok: boolean; error: string | null; detail: string | null
+  request: { method: string; url: string; headers: Record<string, string>; body: string | null; truncated: boolean } | null
+  response: { status: number; statusText: string; headers: Record<string, string>; body: string | null; truncated: boolean } | null
+  checks: { path: string; expected: unknown; actual: unknown; exists: boolean; matched: boolean }[]
+}
+
+export class RequestError extends Error {
+  readonly externalAuthTrace?: ExternalAuthTrace
+
+  constructor(message: string, externalAuthTrace?: ExternalAuthTrace) {
+    super(message)
+    this.externalAuthTrace = externalAuthTrace
+  }
+}
+
 export interface Datasource {
   id: number; name: string; host: string; port: number; database: string; username: string
   ssl: 'disable' | 'require' | 'verify'; enabled: boolean; version: number
@@ -57,7 +73,7 @@ export async function request<T = unknown>(path: string, options: Options = {}):
     const error = await response.json().catch(() => ({}))
     const message = error.message || `请求失败 (${response.status})`
     if (!silent) ElMessage.error(message)
-    throw new Error(message)
+    throw new RequestError(message, error.externalAuthTrace)
   }
   return response.status === 204 ? undefined as T : response.json()
 }
