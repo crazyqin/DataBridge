@@ -95,15 +95,68 @@ API 的「访问方式」可以选择「外部身份验证」，复用已有的�
 | --- | --- | --- |
 | 验证地址、请求方式、超时 | 向固定地址发起 GET / POST，超时 1～30 秒 | `https://identity.example.com/verify` |
 | 凭证来源 Header、来源前缀 | 从调用请求中提取凭证；前缀可留空 | `Authorization`、`Bearer `（末尾一个空格） |
-| 凭证位置、目标名称、目标前缀 | 通过 Header、JSON 字段或表单字段传给验证服务 | Header `Authorization: Bearer …`，或 JSON `{"token":"…"}` |
+| 凭证位置、目标名称、目标前缀 | 通过 Header、URL 查询参数、JSON 字段或表单字段传给验证服务 | Header `Authorization: Bearer …`、查询参数 `access_token=…`，或 JSON `{"token":"…"}` |
 | 附加 Header、请求体 | 验证服务需要的固定配置；不会转发调用者的其他 Header | `{"X-Client-Id":"data-api"}`、`{"audience":"data-api"}` |
+| 动态 Header | 每次验证请求生成时间戳和摘要，可组合固定文本及嵌套摘要 | `MD5(clientId + MD5(clientSecret) + timestamp)` |
 | 成功 HTTP 状态 | 必须匹配的 2xx 状态 | `200` |
-| 成功判定路径、值 | 进一步检查响应中的标量值；路径留空则仅按 HTTP 状态判断成功 | `active` 等于 `true`，或 `code` 等于 `0` |
+| 成功判定路径、值 | 进一步检查响应中的标量值；路径留空则跳过此项 | `active` 等于 `true`，或 `code` 等于 `0` |
+| 附加成功条件 | 按路径检查其他响应字段；所有条件必须同时满足 | `data.status` 等于 `"active"`，且 `data.enabled` 等于 `true` |
 | 身份参数映射 | 将响应字段按类型绑定到 SQL 参数 | `data.user.id` → `_auth_subject`，类型 `string` |
 
-GET 验证请求只支持通过 Header 传递凭证；JSON 和表单使用 POST。来源前缀会被移除，再加上目标前缀；两个前缀都允许留空。目标凭证会覆盖附加配置中的同名 Header / 字段。表单附加字段只支持标量值。验证地址和附加请求内容由管理员配置，调用者不能修改。
+GET 验证请求支持通过 Header 或 URL 查询参数传递凭证；JSON 和表单使用 POST。查询参数也可与 POST 的固定 JSON 请求体配合使用。来源前缀会被移除，再加上目标前缀；两个前缀都允许留空。目标凭证会覆盖附加配置中的同名 Header / 字段 / 查询参数（包括重复参数），其他已有查询参数保留，参数值自动进行 URL 编码。表单附加字段只支持标量值。验证地址和附加请求内容由管理员配置，调用者不能修改。
+
+「动态 Header」是 JSON 对象，键为目标 Header 名称，值为以下三种表达式之一：
+
+| 表达式 | 配置 | 结果 |
+| --- | --- | --- |
+| 固定文本 | `{"type":"literal","value":"client-id"}` | 原样使用文本；摘要前保留空格并使用 UTF-8 编码 |
+| 时间戳 | `{"type":"timestamp","unit":"milliseconds"}` | 当前毫秒时间戳；`seconds` 为秒时间戳，默认毫秒 |
+| 摘要 | `{"type":"digest","algorithm":"md5","encoding":"hex","parts":[…]}` | 按 `parts` 顺序无分隔符拼接，再计算摘要；子项可以是以上任意表达式 |
+
+摘要支持 `md5`、`sha256`、`sha512`，编码支持 `hex`（默认，小写）和 `base64`。同一次请求中所有时间戳表达式使用同一个时间点；每次请求重新计算。动态值覆盖同名固定 Header，不能与 Header 方式的目标凭证同名。配置最多 20 个动态 Header、16 KiB、100 个表达式节点，嵌套最多 6 层；不执行自定义脚本。
+
+例如，验证服务需要固定 `X-Client-Id` 和 `X-Region`，并要求 `X-Call-Time` 为毫秒时间戳、`X-Digest` 为 `MD5(clientId + MD5(clientSecret) + timestamp)`。先在「附加 Header」填写：
+
+```json
+{"X-Client-Id":"client-id","X-Region":"region-a"}
+```
+
+再在「动态 Header」填写（替换 Header 名称、客户端标识和密钥）：
+
+```json
+{
+  "X-Call-Time": {"type":"timestamp","unit":"milliseconds"},
+  "X-Digest": {
+    "type":"digest","algorithm":"md5","encoding":"hex",
+    "parts":[
+      {"type":"literal","value":"client-id"},
+      {"type":"digest","algorithm":"md5","encoding":"hex","parts":[
+        {"type":"literal","value":"client-secret"}
+      ]},
+      {"type":"timestamp","unit":"milliseconds"}
+    ]
+  }
+}
+```
+
+如果服务通过 GET 的 `access_token` 接收用户凭证，选择「查询参数」，目标字段填 `access_token`，目标前缀留空即可。管理员配置的密钥随验证配置加密保存，实际调用凭证仍从请求的来源 Header 提取。
 
 成功判定值使用 JSON 格式，例如 `true`、`0`、`"ok"`；字符串 `"0"` 与数字 `0` 不相等。点分路径支持嵌套对象和数组下标，例如 `data.user.id`、`data.groups.0.id`；字段名包含点时需在身份服务端提供其他字段名。路径不存在、身份字段缺失或类型不匹配时拒绝查询，不使用默认身份。
+
+「附加成功条件」最多 20 条，每条配置响应字段路径和预期 JSON 标量值。HTTP 状态、主成功判定和所有附加条件必须同时满足，之后才提取身份参数并查询数据。例如成功判定设置为 `code` 等于 `200`，再增加 `data.status` 等于 `"active"`，可以同时验证业务结果和身份状态。字符串区分大小写，JSON 字符串要带双引号；条件路径不能重复，也不能与主成功判定路径重复。字段缺失返回 502，值不匹配返回 401，不执行数据查询。主成功判定路径留空且没有附加条件时，仅检查 HTTP 状态。
+
+对应的配置字段示例：
+
+```json
+{
+  "successPath":"code",
+  "successValue":200,
+  "successConditions":[
+    {"path":"data.status","value":"active"},
+    {"path":"data.enabled","value":true}
+  ]
+}
+```
 
 例如，某身份服务接受 `Authorization: Bearer <credential>`，返回：
 

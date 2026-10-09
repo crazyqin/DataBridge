@@ -3,17 +3,22 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 export type FieldType = 'string' | 'integer' | 'decimal' | 'boolean' | 'date' | 'datetime'
 export interface Field { name: string; type: FieldType; required: boolean }
 export type Mode = 'REALTIME' | 'SNAPSHOT' | 'MANUAL'
+export type AuthHeaderValue =
+  | { type: 'literal'; value: string }
+  | { type: 'timestamp'; unit: 'milliseconds' | 'seconds' }
+  | { type: 'digest'; algorithm: 'md5' | 'sha256' | 'sha512'; encoding: 'hex' | 'base64'; parts: AuthHeaderValue[] }
 export interface ExternalAuthConfig {
   url: string; method: 'GET' | 'POST'; inputHeader: string; inputPrefix: string
-  tokenLocation: 'header' | 'json' | 'form'; tokenName: string; tokenPrefix: string
-  headers: Record<string, string>; body: Record<string, unknown>
+  tokenLocation: 'header' | 'query' | 'json' | 'form'; tokenName: string; tokenPrefix: string
+  headers: Record<string, string>; dynamicHeaders: Record<string, AuthHeaderValue>; body: Record<string, unknown>
   successStatus: number; successPath: string; successValue: unknown; timeoutSeconds: number
+  successConditions: { path: string; value: unknown }[]
   bindings: { name: string; path: string; type: FieldType }[]
 }
 export const defaultExternalAuth = (): ExternalAuthConfig => ({
   url: '', method: 'POST', inputHeader: 'Authorization', inputPrefix: 'Bearer ',
-  tokenLocation: 'header', tokenName: 'Authorization', tokenPrefix: 'Bearer ', headers: {}, body: {},
-  successStatus: 200, successPath: 'active', successValue: true, timeoutSeconds: 5, bindings: [],
+  tokenLocation: 'header', tokenName: 'Authorization', tokenPrefix: 'Bearer ', headers: {}, dynamicHeaders: {}, body: {},
+  successStatus: 200, successPath: 'active', successValue: true, successConditions: [], timeoutSeconds: 5, bindings: [],
 })
 
 export interface Datasource {

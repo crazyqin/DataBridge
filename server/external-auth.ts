@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { bad, HttpError, unauthorized } from './errors.ts'
 import { body as object, choice, integer, list, NAME, text } from './input.ts'
 import { isObject, parse, stringify, type Json, type JsonObject } from './json.ts'
@@ -7,19 +8,26 @@ export const AUTH_PARAM_PREFIX = '_auth_'
 export const TEST_CREDENTIAL_HEADER = 'X-DataBridge-Test-Credential'
 export type QueryIdentity = Record<string, Json>
 export interface AuthBinding { name: string; path: string; type: FieldType }
+export interface AuthCondition { path: string; value: Json }
+export type AuthHeaderValue =
+  | { type: 'literal'; value: string }
+  | { type: 'timestamp'; unit: 'milliseconds' | 'seconds' }
+  | { type: 'digest'; algorithm: 'md5' | 'sha256' | 'sha512'; encoding: 'hex' | 'base64'; parts: AuthHeaderValue[] }
 export interface ExternalAuthConfig {
   url: string
   method: 'GET' | 'POST'
   inputHeader: string
   inputPrefix: string
-  tokenLocation: 'header' | 'json' | 'form'
+  tokenLocation: 'header' | 'query' | 'json' | 'form'
   tokenName: string
   tokenPrefix: string
   headers: Record<string, string>
+  dynamicHeaders: Record<string, AuthHeaderValue>
   body: JsonObject
   successStatus: number
   successPath: string
   successValue: Json
+  successConditions: AuthCondition[]
   bindings: AuthBinding[]
   timeoutSeconds: number
 }
@@ -37,6 +45,37 @@ function prefix(input: JsonObject, key: string): string {
   const value = input[key] ?? ''
   if (typeof value !== 'string' || value.length > 100 || /[^\x20-\x7e]/.test(value)) throw bad('凭证前缀必须是不超过 100 字符的可打印 ASCII 文本')
   return value
+}
+
+/** A bounded expression tree, with no script execution or access to request fields. */
+function headerValue(value: Json, budget: { count: number }, depth = 0): AuthHeaderValue {
+  if (depth > 6 || ++budget.count > 100) throw bad('动态 Header 表达式过于复杂')
+  const input = object(value)
+  const type = choice(input, 'type', '动态 Header 值类型', ['literal', 'timestamp', 'digest'] as const)
+  if (type === 'literal') {
+    if (typeof input.value !== 'string' || input.value.length > 4096) throw bad('动态 Header 固定文本必须是不超过 4096 字符的字符串')
+    return { type, value: input.value } // Preserve whitespace and UTF-8 before hashing.
+  }
+  if (type === 'timestamp') return { type, unit: choice(input, 'unit', '时间戳单位', ['milliseconds', 'seconds'] as const, 'milliseconds') }
+  const parts = list(input, 'parts', '摘要拼接项')
+  if (!parts.length || parts.length > 20) throw bad('摘要拼接项需有 1～20 项')
+  return {
+    type, algorithm: choice(input, 'algorithm', '摘要算法', ['md5', 'sha256', 'sha512'] as const),
+    encoding: choice(input, 'encoding', '摘要编码', ['hex', 'base64'] as const, 'hex'),
+    parts: parts.map(part => headerValue(part, budget, depth + 1)),
+  }
+}
+
+function renderHeaderValue(value: AuthHeaderValue, now: number): string {
+  if (value.type === 'literal') return value.value
+  if (value.type === 'timestamp') return String(value.unit === 'seconds' ? Math.floor(now / 1000) : now)
+  const hash = createHash(value.algorithm)
+  for (const part of value.parts) hash.update(renderHeaderValue(part, now), 'utf8')
+  return hash.digest(value.encoding)
+}
+
+function validHeaderText(value: string): boolean {
+  return value.length <= 4096 && !/[^\x20-\x7e]/.test(value)
 }
 
 function fieldPath(value: string): string {
@@ -66,8 +105,8 @@ export function validateExternalAuth(value: Json | undefined): ExternalAuthConfi
     throw bad('验证地址必须是 HTTP(S) 地址，不能包含用户名、密码或片段')
   }
   const method = choice(input, 'method', '验证请求方式', ['GET', 'POST'] as const, 'POST')
-  const tokenLocation = choice(input, 'tokenLocation', '凭证传递位置', ['header', 'json', 'form'] as const, 'header')
-  if (method === 'GET' && tokenLocation !== 'header') throw bad('GET 验证请求需通过 Header 传递凭证')
+  const tokenLocation = choice(input, 'tokenLocation', '凭证传递位置', ['header', 'query', 'json', 'form'] as const, 'header')
+  if (method === 'GET' && !['header', 'query'].includes(tokenLocation)) throw bad('GET 验证请求需通过 Header 或查询参数传递凭证')
   const inputHeader = headerName(text({ inputHeader: input.inputHeader ?? 'Authorization' }, 'inputHeader', '来源 Header', { max: 100 }))
   const tokenName = text({ tokenName: input.tokenName ?? 'Authorization' }, 'tokenName', '目标凭证名称', { max: 100 })
   if (tokenLocation === 'header') headerName(tokenName)
@@ -78,8 +117,20 @@ export function validateExternalAuth(value: Json | undefined): ExternalAuthConfi
   for (const [name, value] of Object.entries(headers)) {
     const lower = headerName(name).toLowerCase()
     if (Object.hasOwn(normalizedHeaders, lower)) throw bad('附加 Header 名称重复')
-    if (typeof value !== 'string' || value.length > 4096 || /[^\x20-\x7e]/.test(value)) throw bad('附加 Header 值必须是可打印 ASCII 文本')
+    if (typeof value !== 'string' || !validHeaderText(value)) throw bad('附加 Header 值必须是可打印 ASCII 文本')
     normalizedHeaders[lower] = value
+  }
+  const dynamicHeaders = object(input.dynamicHeaders ?? {})
+  if (Object.keys(dynamicHeaders).length > 20 || stringify(dynamicHeaders).length > 16_384) throw bad('动态 Header 最多 20 个，配置不能超过 16 KiB')
+  const normalizedDynamic: Record<string, AuthHeaderValue> = Object.create(null)
+  const budget = { count: 0 }
+  for (const [name, value] of Object.entries(dynamicHeaders)) {
+    const lower = headerName(name).toLowerCase()
+    if (Object.hasOwn(normalizedDynamic, lower)) throw bad('动态 Header 名称重复')
+    if (tokenLocation === 'header' && lower === tokenName.toLowerCase()) throw bad('动态 Header 不能与目标凭证 Header 同名')
+    const expression = headerValue(value, budget)
+    if (!validHeaderText(renderHeaderValue(expression, Date.now()))) throw bad('动态 Header 结果必须是不超过 4096 字符的可打印 ASCII 文本')
+    normalizedDynamic[lower] = expression
   }
   const requestBody = object(input.body ?? {})
   if (stringify(requestBody).length > 16_384) throw bad('验证请求体过大')
@@ -91,6 +142,14 @@ export function validateExternalAuth(value: Json | undefined): ExternalAuthConfi
   if (successPath) fieldPath(successPath)
   const successValue = Object.hasOwn(input, 'successValue') ? input.successValue : true
   if (isObject(successValue) || Array.isArray(successValue)) throw bad('成功判定值必须是 JSON 字符串、数字、布尔值或 null')
+  const successConditions = list(input, 'successConditions', '附加成功条件').map(item => {
+    const condition = object(item)
+    const value = condition.value
+    if (value === undefined || isObject(value) || Array.isArray(value)) throw bad('附加成功条件的判定值必须是 JSON 字符串、数字、布尔值或 null')
+    return { path: fieldPath(text(condition, 'path', '附加成功条件的字段路径', { max: 500 })), value }
+  })
+  const conditionPaths = [...(successPath ? [successPath] : []), ...successConditions.map(condition => condition.path)]
+  if (successConditions.length > 20 || new Set(conditionPaths).size !== conditionPaths.length) throw bad('附加成功条件最多 20 条，字段路径不能重复')
   const bindings = list(input, 'bindings', '身份参数映射').map(item => {
     const binding = object(item)
     const name = text(binding, 'name', '身份参数名', { max: 63, pattern: NAME })
@@ -104,9 +163,9 @@ export function validateExternalAuth(value: Json | undefined): ExternalAuthConfi
   if (bindings.length > 50 || new Set(bindings.map(binding => binding.name)).size !== bindings.length) throw bad('身份参数映射最多 50 条，参数名不能重复')
   return {
     url, method, inputHeader, inputPrefix: prefix(input, 'inputPrefix'), tokenLocation, tokenName,
-    tokenPrefix: prefix(input, 'tokenPrefix'), headers: normalizedHeaders, body: requestBody,
+    tokenPrefix: prefix(input, 'tokenPrefix'), headers: normalizedHeaders, dynamicHeaders: normalizedDynamic, body: requestBody,
     successStatus: integer(input, 'successStatus', '成功 HTTP 状态', 200, 299, 200),
-    successPath, successValue, bindings,
+    successPath, successValue, successConditions, bindings,
     timeoutSeconds: integer(input, 'timeoutSeconds', '验证超时', 1, 30, 5),
   }
 }
@@ -132,11 +191,18 @@ export class ExternalAuth {
     let response: Response | undefined
     try {
       const headers = new Headers(config.headers)
+      const now = Date.now()
+      // Legacy saved configurations have no dynamicHeaders; they retain their behavior.
+      for (const [name, expression] of Object.entries(config.dynamicHeaders ?? {})) {
+        headers.set(name, renderHeaderValue(expression, now))
+      }
       if (!headers.has('Accept')) headers.set('Accept', 'application/json')
       const outgoing = config.tokenPrefix + token
+      const url = new URL(config.url)
       let requestBody: string | undefined
-      if (config.tokenLocation === 'header') {
-        headers.set(config.tokenName, outgoing)
+      if (config.tokenLocation === 'header' || config.tokenLocation === 'query') {
+        if (config.tokenLocation === 'header') headers.set(config.tokenName, outgoing)
+        else url.searchParams.set(config.tokenName, outgoing)
         if (config.method === 'POST' && Object.keys(config.body).length) {
           headers.set('Content-Type', 'application/json')
           requestBody = stringify(config.body)
@@ -152,14 +218,18 @@ export class ExternalAuth {
             [key, value === null ? '' : JSON.isRawJSON(value) ? value.rawJSON : String(value)])).toString()
         }
       }
-      response = await fetch(config.url, {
+      response = await fetch(url, {
         method: config.method, headers, body: requestBody,
         redirect: 'error', // Credentials must not be forwarded to a redirect target.
         signal: controller.signal,
       })
       if (response.status === 401 || response.status === 403) throw unauthorized('身份凭证无效或已过期')
       if (response.status !== config.successStatus) throw new HttpError(502, '外部身份验证服务异常')
-      if (!config.successPath && !config.bindings.length) return {}
+      const conditions = [
+        ...(config.successPath ? [{ path: config.successPath, value: config.successValue }] : []),
+        ...(config.successConditions ?? []),
+      ]
+      if (!conditions.length && !config.bindings.length) return {}
       if (Number(response.headers.get('Content-Length')) > MAX_RESPONSE_BYTES || !response.body) throw new HttpError(502, '外部身份验证响应无效')
       const reader = response.body.getReader()
       const chunks: Uint8Array[] = []
@@ -177,10 +247,10 @@ export class ExternalAuth {
         reader.releaseLock()
       }
       const result = parse(Buffer.concat(chunks).toString('utf8'))
-      if (config.successPath) {
-        const actual = readPath(result, config.successPath)
+      for (const condition of conditions) {
+        const actual = readPath(result, condition.path)
         if (actual === undefined) throw new HttpError(502, '外部身份验证响应缺少成功判定字段')
-        if (identity(actual) !== identity(config.successValue)) throw unauthorized('身份凭证未通过验证')
+        if (identity(actual) !== identity(condition.value)) throw unauthorized('身份凭证未通过验证')
       }
       const bindings: QueryIdentity = Object.create(null)
       for (const binding of config.bindings) {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -13,7 +14,7 @@ import { HttpError } from '../server/errors.ts'
 import { parse, stringify, type JsonObject } from '../server/json.ts'
 import { Logs } from '../server/logs.ts'
 import { Sources } from '../server/sources.ts'
-import { ExternalAuth, validateExternalAuth } from '../server/external-auth.ts'
+import { ExternalAuth, validateExternalAuth, type ExternalAuthConfig } from '../server/external-auth.ts'
 
 async function provider(handler: (req: IncomingMessage, res: ServerResponse) => void) {
   const server = createServer(handler)
@@ -54,6 +55,172 @@ const authConfig = (url: string, overrides: JsonObject = {}): JsonObject => ({
 
 const status = (expected: number) => (error: unknown) => error instanceof HttpError && error.status === expected
 
+const signingHeaders: JsonObject = {
+  'X-Call-Time': { type: 'timestamp', unit: 'milliseconds' },
+  'X-Digest': { type: 'digest', algorithm: 'md5', encoding: 'hex', parts: [
+    { type: 'literal', value: 'example-client' },
+    { type: 'digest', algorithm: 'md5', encoding: 'hex', parts: [{ type: 'literal', value: 'päss secret ' }] },
+    { type: 'timestamp', unit: 'milliseconds' },
+  ] },
+}
+
+test('query credentials and dynamic headers match a timestamped nested digest protocol', async t => {
+  const received: { method: string; headers: Record<string, string>; url: URL; body: string }[] = []
+  const transport = t.mock.method(globalThis, 'fetch', async (url: string | URL, options: RequestInit) => {
+    const request = new Request(url, options)
+    received.push({ method: request.method, headers: Object.fromEntries(request.headers), url: new URL(request.url), body: await request.text() })
+    return new Response('{"code":200,"data":{"accountCode":"00123","name":"Test User","userId":"9007199254740993"}}', {
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+  const verifier = new ExternalAuth(20)
+  let now = 1791500000123
+  const clock = t.mock.method(Date, 'now', () => now)
+  const settings = validateExternalAuth(authConfig('https://identity.example.com/verify?audience=data&access_token=stale&access_token=duplicate', {
+    method: 'GET', tokenLocation: 'query', tokenName: 'access_token',
+    headers: { 'X-Client-Id': 'example-client', 'X-Region': 'example-region', 'X-Call-Time': 'stale' },
+    dynamicHeaders: { ...signingHeaders,
+      'X-Time-Seconds': { type: 'timestamp', unit: 'seconds' },
+      'X-Empty-Digest': { type: 'digest', algorithm: 'md5', parts: [{ type: 'literal', value: '' }] },
+      'X-SHA256': { type: 'digest', algorithm: 'sha256', encoding: 'base64', parts: [{ type: 'literal', value: 'abc' }] },
+      'X-SHA512': { type: 'digest', algorithm: 'sha512', parts: [{ type: 'literal', value: 'abc' }] },
+    },
+    successPath: 'code', successValue: 200, bindings: [
+      { name: '_auth_account', path: 'data.accountCode', type: 'string' },
+      { name: '_auth_name', path: 'data.name', type: 'string' },
+      { name: '_auth_user_id', path: 'data.userId', type: 'string' },
+    ],
+  }))
+  try {
+    const identity = await verifier.verify(settings, 'a+b/c=&admin=true')
+    assert.deepEqual(identity, { _auth_account: '00123', _auth_name: 'Test User', _auth_user_id: '9007199254740993' })
+    const request = received.at(-1)!
+    assert.equal(request.method, 'GET')
+    assert.deepEqual(request.url.searchParams.getAll('access_token'), ['a+b/c=&admin=true'])
+    assert.equal(request.url.searchParams.get('admin'), null)
+    assert.equal(request.url.searchParams.get('audience'), 'data')
+    assert.equal(request.headers['x-access-token'], undefined)
+    assert.equal(request.headers['x-client-id'], 'example-client')
+    assert.equal(request.headers['x-region'], 'example-region')
+    assert.equal(request.headers['x-call-time'], '1791500000123')
+    assert.equal(request.headers['x-time-seconds'], '1791500000')
+    // Golden values from Python hashlib verify UTF-8, whitespace, lowercase hex and nesting.
+    assert.equal(request.headers['x-digest'], 'ca1124a3f9884fb737b92e8b6567860f')
+    assert.equal(request.headers['x-empty-digest'], 'd41d8cd98f00b204e9800998ecf8427e')
+    assert.equal(request.headers['x-sha256'], 'ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=')
+    assert.equal(request.headers['x-sha512'], createHash('sha512').update('abc').digest('hex'))
+    assert.equal(request.body, '')
+    now += 1000
+    await verifier.verify(settings, 'second-token')
+    const next = received.at(-1)!
+    assert.equal(next.headers['x-call-time'], '1791500001123')
+    assert.notEqual(next.headers['x-digest'], request.headers['x-digest'])
+    assert.equal(next.headers['x-digest'], createHash('md5').update('example-client9661077a7ef7e5c92f3400f631503c691791500001123').digest('hex'))
+    await verifier.verify(validateExternalAuth({ ...settings, method: 'POST', body: { audience: 'data' } } as unknown as JsonObject), 'third-token')
+    assert.equal(received.at(-1)!.url.searchParams.get('access_token'), 'third-token')
+    assert.deepEqual(JSON.parse(received.at(-1)!.body), { audience: 'data' })
+  } finally {
+    clock.mock.restore()
+    transport.mock.restore()
+  }
+})
+
+test('external verification checks every success condition before data access', async t => {
+  let result: unknown = { code: 200, data: { state: 'A', enabled: true, subject: '00123' } }
+  let responseStatus = 200
+  t.mock.method(globalThis, 'fetch', async () => new Response(result === undefined ? null : JSON.stringify(result), { status: responseStatus }))
+  const verifier = new ExternalAuth(20)
+  const settings = validateExternalAuth(authConfig('https://identity.example.com/verify', {
+    successPath: 'code', successValue: 200, successConditions: [
+      { path: 'data.state', value: 'A' }, { path: 'data.enabled', value: true },
+    ], bindings: [{ name: '_auth_subject', path: 'data.subject', type: 'string' }],
+  }))
+  await t.test('HTTP status and every response condition must match', async () => {
+    assert.deepEqual(await verifier.verify(settings, 'test-token'), { _auth_subject: '00123' })
+    for (const [code, state, enabled] of [[200, 'D', true], [200, 'A', false], [500, 'A', true], ['200', 'A', true]]) {
+      result = { code, data: { state, enabled, subject: '00123' } }
+      await assert.rejects(verifier.verify(settings, 'test-token'), status(401))
+    }
+    result = { code: 200, data: { state: 'A', enabled: true, subject: '00123' } }
+    responseStatus = 201
+    await assert.rejects(verifier.verify(settings, 'test-token'), status(502))
+    responseStatus = 200
+  })
+  await t.test('missing fields fail closed and matching strings are case sensitive', async () => {
+    result = { code: 200, data: { enabled: true, subject: '00123' } }
+    await assert.rejects(verifier.verify(settings, 'test-token'), status(502))
+    for (const state of ['a', null, true, 0]) {
+      result = { code: 200, data: { state, enabled: true, subject: '00123' } }
+      await assert.rejects(verifier.verify(settings, 'test-token'), status(401))
+    }
+  })
+  await t.test('additional conditions work without a primary condition or SQL mappings', async () => {
+    const additionalOnly = validateExternalAuth(authConfig(settings.url, {
+      successPath: '', successConditions: [{ path: 'data.state', value: 'A' }], bindings: [],
+    }))
+    result = { data: { state: 'D' } }
+    await assert.rejects(verifier.verify(additionalOnly, 'test-token'), status(401))
+    result = { data: { state: 'A' } }
+    assert.deepEqual(await verifier.verify(additionalOnly, 'test-token'), {})
+    result = undefined
+    responseStatus = 204
+    await assert.rejects(verifier.verify({ ...additionalOnly, successStatus: 204 }, 'test-token'), status(502))
+    assert.deepEqual(await verifier.verify({ ...additionalOnly, successStatus: 204, successConditions: [] }, 'test-token'), {})
+    responseStatus = 200
+  })
+  await t.test('nested paths, arrays and scalar comparisons retain exact values', async () => {
+    const scalarConditions = validateExternalAuth(authConfig(settings.url, { successPath: '', bindings: [], successConditions: [
+      { path: 'groups.0.active', value: false }, { path: 'optional', value: null }, { path: 'code', value: 0 },
+    ] }))
+    result = { groups: [{ active: false }], optional: null, code: 0 }
+    assert.deepEqual(await verifier.verify(scalarConditions, 'test-token'), {})
+    result = { groups: [{ active: false }], optional: null, code: '0' }
+    await assert.rejects(verifier.verify(scalarConditions, 'test-token'), status(401))
+    result = { groups: [{ active: false }], code: 0 }
+    await assert.rejects(verifier.verify(scalarConditions, 'test-token'), status(502))
+    const inherited = validateExternalAuth(authConfig(settings.url, { successPath: '', bindings: [],
+      successConditions: [{ path: 'toString', value: 'allowed' }] }))
+    await assert.rejects(verifier.verify(inherited, 'test-token'), status(502))
+  })
+  await t.test('saved configurations without additional conditions retain their existing behavior', async () => {
+    const legacy = { ...settings }
+    delete (legacy as Partial<ExternalAuthConfig>).successConditions
+    result = { code: 200, data: { state: 'D', subject: '00123' } }
+    assert.deepEqual(await verifier.verify(legacy, 'test-token'), { _auth_subject: '00123' })
+  })
+  await t.test('invalid state never reaches the business query and valid fields become trusted parameters', async () => {
+    const f = fixture()
+    let queries = 0
+    t.mock.method(f.apis, 'query', async (...args: Parameters<Apis['query']>) => {
+      queries++
+      assert.deepEqual(args[2], { _auth_subject: '00123' })
+      return [{ item: 'business data' }]
+    })
+    try {
+      const source = f.sources.save(undefined, { name: 'unused', host: '127.0.0.1', port: 1, database: 'unused', username: 'unused', password: 'unused' })
+      f.apis.save(undefined, {
+        name: 'state-check', code: 'state_check', path: '/open/state-check', auth: 'EXTERNAL', mode: 'REALTIME', enabled: true,
+        sql: 'SELECT :_auth_subject AS subject', datasourceId: source.id, externalAuth: settings as unknown as JsonObject,
+      })
+      const call = () => f.app.request('/open/state-check', { headers: { 'X-Access-Token': 'test-token' } })
+      for (const data of [{ state: 'D', enabled: true }, { state: 'A', enabled: false }, { enabled: true }]) {
+        result = { code: 200, data: { ...data, subject: '00123' } }
+        const response = await call()
+        assert.ok(response.status === 401 || response.status === 502)
+        assert.equal((await response.json()).data, undefined)
+        assert.equal(queries, 0)
+      }
+      result = { code: 200, data: { state: 'A', enabled: true, subject: '00123' } }
+      const response = await call()
+      assert.equal(response.status, 200)
+      assert.deepEqual((await response.json()).data, [{ item: 'business data' }])
+      assert.equal(queries, 1)
+    } finally {
+      await f.close()
+    }
+  })
+})
+
 test('external verification supports configurable requests and typed response mappings', async t => {
   const received: { method?: string; headers: IncomingMessage['headers']; body: string }[] = []
   let result = '{"code":0,"data":{"user":{"id":"00123"},"tenant":{"id":9007199254740993},"enabled":false,"groups":[{"id":"g1"}]}}'
@@ -93,6 +260,9 @@ test('external verification supports configurable requests and typed response ma
       assert.equal(received.at(-1)!.headers.authorization, undefined)
       assert.equal(received.at(-1)!.body, '')
       await assert.rejects(verifier.verify(settings, 'a+b/c='), status(401))
+      const legacy = { ...settings }
+      delete (legacy as Partial<ExternalAuthConfig>).dynamicHeaders
+      assert.equal((await verifier.verify(legacy, 'Bearer legacy-token'))._auth_subject, '00123')
     })
     await t.test('POST JSON forwards configured fields and binds the actual credential last', async () => {
       const settings = validateExternalAuth({ ...base, method: 'POST', tokenLocation: 'json', tokenName: 'token', tokenPrefix: '',
@@ -148,10 +318,35 @@ test('external verification rejects invalid request and mapping configurations b
     { headers: { 'X-Key': 'one', 'x-key': 'two' } }, { inputPrefix: '\n' },
     { tokenLocation: 'form', body: { nested: {} } }, { successValue: {} }, { successPath: 'data..status' },
     { successStatus: 302 }, { timeoutSeconds: 31 },
+    { successConditions: [{ path: 'data..state', value: 'A' }] },
+    { successConditions: [{ path: 'data.state' }] },
+    { successConditions: [{ path: 'data.state', value: {} }] },
+    { successConditions: [{ path: 'data.state', value: [] }] },
+    { successConditions: [{ path: 'active', value: true }] },
+    { successConditions: [{ path: 'data.state', value: 'A' }, { path: 'data.state', value: 'D' }] },
+    { successConditions: Array.from({ length: 21 }, (_, i) => ({ path: `data.flag${i}`, value: true })) },
+    { dynamicHeaders: { Host: { type: 'timestamp' } } },
+    { dynamicHeaders: { 'X-Time': { type: 'timestamp' }, 'x-time': { type: 'timestamp' } } },
+    { dynamicHeaders: { 'X-Access-Token': { type: 'timestamp' } } },
+    { dynamicHeaders: { 'X-Time': { type: 'timestamp', unit: 'minutes' } } },
+    { dynamicHeaders: { 'X-Time': { type: 'script', value: 'Date.now()' } } },
+    { dynamicHeaders: { 'X-Time': { type: 'literal', value: 'bad\r\nheader' } } },
+    { dynamicHeaders: { 'X-Time': { type: 'literal', value: 123 } } },
+    { dynamicHeaders: { 'X-Time': { type: 'literal', value: 'x'.repeat(4097) } } },
+    { dynamicHeaders: { 'X-Digest': { type: 'digest', algorithm: 'sha1', parts: [{ type: 'literal', value: 'secret' }] } } },
+    { dynamicHeaders: { 'X-Digest': { type: 'digest', algorithm: 'md5', encoding: 'binary', parts: [{ type: 'literal', value: 'secret' }] } } },
+    { dynamicHeaders: { 'X-Digest': { type: 'digest', algorithm: 'md5', parts: [] } } },
     { bindings: [{ name: 'subject', path: 'sub', type: 'string' }] },
     { bindings: [{ name: '_auth_subject', path: 'sub', type: 'invalid' }] },
     { bindings: [{ name: '_auth_subject', path: 'sub', type: 'string' }, { name: '_auth_subject', path: 'id', type: 'string' }] },
   ]
+  let deep: JsonObject = { type: 'literal', value: 'secret' }
+  for (let i = 0; i < 8; i++) deep = { type: 'digest', algorithm: 'md5', parts: [deep] }
+  invalid.push({ dynamicHeaders: { 'X-Deep': deep } })
+  invalid.push({ dynamicHeaders: Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`X-${i}`, { type: 'timestamp' }])) })
+  invalid.push({ dynamicHeaders: Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`X-${i}`, {
+    type: 'digest', algorithm: 'md5', parts: Array.from({ length: 20 }, () => ({ type: 'literal', value: 'x' })),
+  }])) })
   for (const changes of invalid) assert.throws(() => validateExternalAuth({ ...base, ...changes }), status(400))
 })
 
@@ -244,7 +439,7 @@ test('identity-scoped APIs validate configuration and reject missing identity wi
     const base: JsonObject = {
       name: 'scoped', code: 'scoped', path: '/open/scoped', mode: 'REALTIME', auth: 'EXTERNAL',
       datasourceId: source.id, sql: 'SELECT :_auth_subject AS subject', enabled: true,
-      externalAuth: authConfig('http://127.0.0.1:1/verify', { headers: { 'X-Service-Key': 'private-service-key' } }),
+      externalAuth: authConfig('http://127.0.0.1:1/verify', { headers: { 'X-Service-Key': 'private-service-key' }, dynamicHeaders: signingHeaders }),
     }
     assert.throws(() => f.apis.save(undefined, { ...base, sql: "SELECT ':_auth_subject' AS literal -- :_auth_subject" }), /没有在 SQL 中使用/)
     assert.throws(() => f.apis.save(undefined, { ...base, params: [{ name: '_auth_subject', type: 'string' }] }), /不能声明/)
@@ -253,8 +448,10 @@ test('identity-scoped APIs validate configuration and reject missing identity wi
     const api = f.apis.save(undefined, base)
     assert.equal(f.apis.get(api.id).auth, 'EXTERNAL')
     assert.equal(f.apis.get(api.id).externalAuth!.headers['x-service-key'], 'private-service-key')
+    assert.ok(stringify(f.apis.get(api.id).externalAuth).includes('päss secret '))
     const stored = f.db.prepare('SELECT external_auth FROM api WHERE id = ?').get(api.id) as { external_auth: string }
     assert.doesNotMatch(stored.external_auth, /private-service-key|verify|_auth_subject/)
+    assert.ok(!stored.external_auth.includes('päss secret '))
     const edited = f.apis.save(api.id, { ...base, version: api.version })
     assert.equal(edited.externalAuth!.bindings[0].name, '_auth_subject')
     assert.throws(() => f.apis.save(api.id, { ...base, version: api.version }), status(409))
@@ -290,12 +487,24 @@ test('external identity reaches SQL, paging and admin previews without accepting
     const injection = "00123' OR '1'='1"
     const upstream = await provider((req, res) => {
       calls++
-      const token = req.headers['x-access-token']
+      const requestUrl = new URL(req.url!, 'http://localhost')
+      const token = requestUrl.searchParams.get('access_token') ?? req.headers['x-access-token']
+      if (requestUrl.searchParams.has('access_token')) {
+        const callTime = String(req.headers['x-call-time'])
+        const secretDigest = createHash('md5').update('päss secret ').digest('hex')
+        const expected = createHash('md5').update(`example-client${secretDigest}${callTime}`).digest('hex')
+        if (req.method !== 'GET' || !/^\d{13}$/.test(callTime) || req.headers['x-digest'] !== expected || req.headers['x-client-id'] !== 'example-client') {
+          res.writeHead(401); res.end(); return
+        }
+      }
       const subject = token === 'alice-token' ? '00123' : token === 'bob-token' ? '00456' : token === 'injection-token' ? injection : undefined
       res.setHeader('Content-Type', 'application/json')
       if (token === 'outage-token') { res.writeHead(500); res.end('private provider details'); return }
       if (revoked || !subject) { res.writeHead(401); res.end(); return }
-      res.end(JSON.stringify({ code: 0, data: { user: { id: subject }, tenant: { id: token === 'bob-token' ? 't2' : 't1' } } }))
+      res.end(JSON.stringify({ code: 0, data: {
+        user: { id: subject }, tenant: { id: token === 'bob-token' ? 't2' : 't1' },
+        accountCode: subject, name: token === 'bob-token' ? 'Test B' : 'Test A', userId: '9007199254740993',
+      } }))
     })
     const f = fixture()
     let cookie = ''
@@ -329,13 +538,34 @@ test('external identity reaches SQL, paging and admin previews without accepting
         ORDER BY o.id`
       const definition: JsonObject = {
         name: 'orders', code: 'orders', path: '/open/orders', mode: 'REALTIME', auth: 'EXTERNAL',
-        externalAuth: authConfig(upstream.url, { successPath: 'code', successValue: 0, bindings: [
-          { name: '_auth_subject', path: 'data.user.id', type: 'string' },
-          { name: '_auth_tenant', path: 'data.tenant.id', type: 'string' },
-        ] }), datasourceId: source.id, sql, params: [{ name: 'item', type: 'string' }], enabled: true,
+        externalAuth: authConfig(upstream.url, {
+          method: 'GET', tokenLocation: 'query', tokenName: 'access_token',
+          headers: { 'X-Client-Id': 'example-client' }, dynamicHeaders: signingHeaders,
+          successPath: 'code', successValue: 0, bindings: [
+            { name: '_auth_subject', path: 'data.user.id', type: 'string' },
+            { name: '_auth_tenant', path: 'data.tenant.id', type: 'string' },
+          ],
+        }), datasourceId: source.id, sql, params: [{ name: 'item', type: 'string' }], enabled: true,
       }
       f.apis.save(undefined, definition)
       f.apis.save(undefined, { ...definition, name: 'orders-post', code: 'orders_post', path: '/open/orders-post', method: 'POST' })
+      await t.test('several verified response fields are independently available as SQL parameters', async () => {
+        const externalAuth = { ...definition.externalAuth as JsonObject, bindings: [
+          { name: '_auth_account', path: 'data.accountCode', type: 'string' },
+          { name: '_auth_name', path: 'data.name', type: 'string' },
+          { name: '_auth_user_id', path: 'data.userId', type: 'string' },
+        ] }
+        f.apis.save(undefined, { ...definition, name: 'identity', code: 'identity', path: '/open/identity',
+          sql: 'SELECT :_auth_account AS account_code, :_auth_name AS display_name, :_auth_user_id AS user_id', params: [], externalAuth })
+        const identity = await call('/open/identity', 'alice-token')
+        assert.equal(identity.status, 200)
+        assert.deepEqual(identity.body.data, [{ account_code: '00123', display_name: 'Test A', user_id: '9007199254740993' }])
+        assert.equal((await call('/open/identity?_auth_name=Forged', 'alice-token')).status, 400)
+        const badSignature = { ...externalAuth, dynamicHeaders: { 'X-Call-Time': { type: 'timestamp' }, 'X-Digest': { type: 'literal', value: 'wrong' } } }
+        f.apis.save(undefined, { ...definition, name: 'bad-signature', code: 'bad_signature', path: '/open/bad-signature',
+          sql: 'SELECT :_auth_account AS account_code, :_auth_name AS display_name, :_auth_user_id AS user_id', params: [], externalAuth: badSignature })
+        assert.equal((await call('/open/bad-signature', 'alice-token')).status, 401)
+      })
       await t.test('different tokens bind different identities, including leading zeros and permission joins', async () => {
         const alice = await call('/open/orders', 'alice-token')
         const bob = await call('/open/orders', 'bob-token')

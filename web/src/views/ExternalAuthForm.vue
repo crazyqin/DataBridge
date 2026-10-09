@@ -5,15 +5,19 @@ import { FIELD_TYPES, type ExternalAuthConfig, type Mode } from '../api'
 defineProps<{ mode: Mode }>()
 const config = defineModel<ExternalAuthConfig>({ required: true })
 const headersText = ref('{}')
+const dynamicHeadersText = ref('{}')
 const bodyText = ref('{}')
 const successText = ref('true')
+const conditions = ref<{ path: string; valueText: string }[]>([])
 watch(() => config.value, value => {
   headersText.value = JSON.stringify(value.headers, null, 2)
+  dynamicHeadersText.value = JSON.stringify(value.dynamicHeaders ?? {}, null, 2)
   bodyText.value = JSON.stringify(value.body, null, 2)
   successText.value = JSON.stringify(value.successValue)
+  conditions.value = (value.successConditions ?? []).map(condition => ({ path: condition.path, valueText: JSON.stringify(condition.value) }))
 }, { immediate: true })
 watch(() => config.value.method, method => {
-  if (method === 'GET') config.value.tokenLocation = 'header'
+  if (method === 'GET' && ['json', 'form'].includes(config.value.tokenLocation)) config.value.tokenLocation = 'header'
 })
 
 function readJson(value: string, label: string): unknown {
@@ -24,9 +28,26 @@ function value(): ExternalAuthConfig {
   return {
     ...config.value,
     headers: readJson(headersText.value, '附加 Header') as Record<string, string>,
+    dynamicHeaders: readJson(dynamicHeadersText.value, '动态 Header') as ExternalAuthConfig['dynamicHeaders'],
     body: config.value.method === 'GET' ? {} : readJson(bodyText.value, '附加请求体') as Record<string, unknown>,
     successValue: readJson(successText.value, '成功判定值'),
+    successConditions: conditions.value.map((condition, index) => ({
+      path: condition.path, value: readJson(condition.valueText, `附加成功条件第 ${index + 1} 项的判定值`),
+    })),
   }
+}
+
+function signatureExample() {
+  dynamicHeadersText.value = JSON.stringify({
+    'X-Call-Time': { type: 'timestamp', unit: 'milliseconds' },
+    'X-Digest': {
+      type: 'digest', algorithm: 'md5', encoding: 'hex', parts: [
+        { type: 'literal', value: 'client-id' },
+        { type: 'digest', algorithm: 'md5', encoding: 'hex', parts: [{ type: 'literal', value: 'client-secret' }] },
+        { type: 'timestamp', unit: 'milliseconds' },
+      ],
+    },
+  }, null, 2)
 }
 defineExpose({ value })
 </script>
@@ -51,6 +72,7 @@ defineExpose({ value })
   <el-form-item label="凭证传递位置">
     <el-radio-group v-model="config.tokenLocation">
       <el-radio value="header">Header</el-radio>
+      <el-radio value="query">查询参数</el-radio>
       <el-radio value="json" :disabled="config.method === 'GET'">JSON 字段</el-radio>
       <el-radio value="form" :disabled="config.method === 'GET'">表单字段</el-radio>
     </el-radio-group>
@@ -62,7 +84,14 @@ defineExpose({ value })
   </el-row>
   <el-form-item label="附加 Header">
     <el-input v-model="headersText" type="textarea" :rows="2" class="mono" placeholder='{"X-Client-Id":"my-app"}' />
-    <span class="muted">JSON 对象，仅发送这里配置的 Header 和凭证。配置加密保存。</span>
+    <span class="muted">JSON 对象，填写验证服务需要的固定 Header。配置加密保存。</span>
+  </el-form-item>
+  <el-form-item label="动态 Header">
+    <div style="width: 100%">
+      <el-input v-model="dynamicHeadersText" type="textarea" :rows="6" class="mono" placeholder='{"X-Call-Time":{"type":"timestamp","unit":"milliseconds"}}' />
+      <el-button v-if="dynamicHeadersText.trim() === '{}'" text type="primary" @click="signatureExample">填入时间戳和摘要示例</el-button>
+      <div class="muted">JSON 对象；literal 为固定文本，timestamp 为毫秒或秒时间戳，digest 按 parts 顺序拼接后计算摘要，支持 md5 / sha256 / sha512 和 hex / base64，可嵌套。一次请求共用一个时间戳，动态值覆盖同名固定 Header。</div>
+    </div>
   </el-form-item>
   <el-form-item v-if="config.method === 'POST'" label="附加请求体">
     <el-input v-model="bodyText" type="textarea" :rows="2" class="mono" placeholder='{"audience":"data-api"}' />
@@ -70,9 +99,24 @@ defineExpose({ value })
   </el-form-item>
   <el-form-item label="成功 HTTP 状态"><el-input-number v-model="config.successStatus" :min="200" :max="299" /></el-form-item>
   <el-row :gutter="20">
-    <el-col :span="12"><el-form-item label="成功判定路径"><el-input v-model="config.successPath" placeholder="如 active、code；留空仅检查 HTTP 状态" /></el-form-item></el-col>
+    <el-col :span="12"><el-form-item label="成功判定路径"><el-input v-model="config.successPath" placeholder="如 active、code；留空跳过此项" /></el-form-item></el-col>
     <el-col :span="12"><el-form-item label="等于 (JSON)"><el-input v-model="successText" :disabled="!config.successPath" placeholder='如 true、0、"ok"' /></el-form-item></el-col>
   </el-row>
+  <el-form-item label="附加成功条件">
+    <div style="width: 100%">
+      <el-table :data="conditions" size="small" empty-text="未配置附加条件">
+        <el-table-column label="响应字段路径">
+          <template #default="{ row }"><el-input v-model="row.path" placeholder="如 data.status、data.enabled" /></template>
+        </el-table-column>
+        <el-table-column label="等于 (JSON)">
+          <template #default="{ row }"><el-input v-model="row.valueText" placeholder='如 "active"、true、0' /></template>
+        </el-table-column>
+        <el-table-column width="65"><template #default="{ $index }"><el-button link type="danger" @click="conditions.splice($index, 1)">删除</el-button></template></el-table-column>
+      </el-table>
+      <el-button text type="primary" :disabled="conditions.length >= 20" @click="conditions.push({ path: '', valueText: 'true' })">+ 添加条件</el-button>
+      <div class="muted">HTTP 状态、成功判定和所有附加条件必须同时满足，才能提取身份参数并查询数据。最多 20 条；字符串需用双引号，路径不能重复。无响应字段条件时仅检查 HTTP 状态。</div>
+    </div>
+  </el-form-item>
   <el-form-item label="身份参数映射">
     <div style="width: 100%">
       <el-table :data="config.bindings" size="small" empty-text="未配置映射：仅验证访问身份">
