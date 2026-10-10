@@ -76,12 +76,13 @@ defineExpose({ value })
       <el-radio value="json" :disabled="config.method === 'GET'">JSON 字段</el-radio>
       <el-radio value="form" :disabled="config.method === 'GET'">表单字段</el-radio>
     </el-radio-group>
-    <span class="muted">从来源 Header 去掉前缀后，将凭证发送给验证服务。</span>
+    <span class="muted">从来源 Header 去掉前缀后，将凭证发送给验证服务。对应 Python requests 的 params 时，选择「查询参数」。</span>
   </el-form-item>
   <el-row :gutter="20">
     <el-col :span="12"><el-form-item :label="config.tokenLocation === 'header' ? '目标 Header' : '目标字段'"><el-input v-model="config.tokenName" placeholder="如 Authorization 或 token" /></el-form-item></el-col>
     <el-col :span="12"><el-form-item label="目标前缀"><el-input v-model="config.tokenPrefix" placeholder="如 Bearer 后加一个空格；无前缀则留空" /></el-form-item></el-col>
   </el-row>
+  <p v-if="config.tokenLocation === 'query'" class="muted">目标字段是验证地址中的查询参数名，区分大小写且必须与验证服务要求的名称完全一致，例如 userToken。</p>
   <el-form-item label="附加 Header">
     <el-input v-model="headersText" type="textarea" :rows="2" class="mono" placeholder='{"X-Client-Id":"my-app"}' />
     <span class="muted">JSON 对象，填写验证服务需要的固定 Header。配置加密保存。</span>

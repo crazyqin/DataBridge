@@ -16,7 +16,7 @@ function body(value: string | null) {
               :description="trace.detail || undefined" :closable="false" show-icon />
     <div class="muted trace-meta">{{ formatTime(trace.at) }} · 验证耗时 {{ trace.elapsedMs }} ms · 凭证、密码和签名摘要已脱敏</div>
     <template v-if="trace.request">
-      <h4>发送的验证请求</h4>
+      <h4>DataBridge → 外部身份服务：实际验证请求</h4>
       <pre class="result">{{ trace.request.method }} {{ trace.request.url }}</pre>
       <div class="muted">请求 Header</div>
       <pre class="result">{{ json(trace.request.headers) }}</pre>

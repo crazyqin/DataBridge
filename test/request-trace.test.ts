@@ -36,3 +36,37 @@ test('editor diagnostics retain non-JSON gateway responses and request details o
   assert.equal(trace.error, 'Failed to fetch')
   assert.equal(trace.request.method, 'POST')
 })
+
+test('auth request metadata stays readable without exposing credentials or relaxing response redaction', () => {
+  for (const sqlTest of [false, true]) {
+    const externalAuth = {
+      method: 'GET', url: 'https://identity.example.com/verify',
+      inputHeader: 'usertoekn', inputPrefix: '', tokenLocation: 'query', tokenName: 'userToekn', tokenPrefix: '',
+      headers: { 'X-Service-Key': 'private-service-key' },
+      dynamicHeaders: { authdigest: { type: 'digest', parts: [{ type: 'literal', value: 'private-password' }] } },
+      body: { userToekn: 'private-body-token' },
+    }
+    const payload = JSON.stringify(sqlTest ? { api: { externalAuth }, params: { tokenName: 'private-param-token' } } : { externalAuth })
+    const recorder = createRequestTrace('POST', 'https://app.example.com/admin/external-auth/test', {
+      'X-DataBridge-Test-Credential': 'private-user-token',
+    }, payload)
+    const safe = JSON.parse(recorder.trace.request.body!)
+    const config = sqlTest ? safe.api.externalAuth : safe.externalAuth
+    for (const name of ['method', 'url', 'inputHeader', 'inputPrefix', 'tokenLocation', 'tokenName', 'tokenPrefix'] as const) {
+      assert.equal(config[name], externalAuth[name], `${name} should help diagnose forwarding mistakes`)
+    }
+    assert.equal(config.body.userToekn, '[REDACTED]')
+    if (sqlTest) assert.equal(safe.params.tokenName, '[REDACTED]')
+    recorder.received(new Response('', { headers: { 'Content-Type': 'application/json' } }), JSON.stringify({
+      message: 'GET query rejected private-user-token', userToekn: 'private-rotated-token',
+      externalAuth: { tokenName: 'private-response-token' },
+      request: { url: 'https://identity.example.com/verify?userToekn=private-user-token' },
+    }))
+    const result = JSON.parse(recorder.trace.response!.body!)
+    assert.equal(result.userToekn, '[REDACTED]')
+    assert.equal(result.externalAuth.tokenName, '[REDACTED]')
+    assert.equal(result.request.url, 'https://identity.example.com/verify?userToekn=[REDACTED]')
+    assert.match(result.message, /GET query rejected/)
+    assert.doesNotMatch(JSON.stringify(recorder.finish()), /private-/)
+  }
+})

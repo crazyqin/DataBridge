@@ -9,6 +9,8 @@ export interface RequestTrace {
 
 const HIDDEN = '[REDACTED]'
 const sensitive = (key: string) => /authorization|cookie|token|secret|password|passwd|credential|digest|signature|(?:api|service)[_-]?key/i.test(key)
+const authMetadata = new Set(['inputHeader', 'inputPrefix', 'tokenLocation', 'tokenName', 'tokenPrefix'])
+const isAuthConfig = (path: string) => path === 'externalAuth' || path === 'api.externalAuth'
 const jsonApi = JSON as typeof JSON & { rawJSON?: (source: string) => object; isRawJSON?: (value: unknown) => boolean }
 
 function parse(text: string): unknown {
@@ -28,7 +30,7 @@ export function createRequestTrace(method: string, url: string, headers: Record<
     secrets.add(new URLSearchParams({ value }).toString().slice(6))
     secrets.add(JSON.stringify(value).slice(1, -1))
   }
-  function collect(value: unknown, key = '', depth = 0) {
+  function collect(value: unknown, key = '', depth = 0, path = '') {
     if (depth > 30) return
     if (typeof value === 'string' && sensitive(key)) {
       secret(value)
@@ -36,9 +38,13 @@ export function createRequestTrace(method: string, url: string, headers: Record<
     }
     if (value && typeof value === 'object' && !jsonApi.isRawJSON?.(value)) {
       const object = value as Record<string, unknown>
-      if (typeof object.tokenName === 'string') credentialNames.add(object.tokenName.toLowerCase())
+      if (isAuthConfig(path) && typeof object.tokenName === 'string') credentialNames.add(object.tokenName.toLowerCase())
       if (object.type === 'literal' && typeof object.value === 'string') secret(object.value)
-      for (const [name, part] of Object.entries(object)) collect(part, name, depth + 1)
+      for (const [name, part] of Object.entries(object)) {
+        // These describe how to forward a token; their values are not credentials.
+        if (isAuthConfig(path) && authMetadata.has(name) && typeof part === 'string') continue
+        collect(part, name, depth + 1, path ? `${path}.${name}` : name)
+      }
     }
   }
   collect(headers)
@@ -53,28 +59,30 @@ export function createRequestTrace(method: string, url: string, headers: Record<
     return safe.replace(/([?&\s])([^=\s&]+)=([^&\s<]*)/g,
       (match, prefix: string, key: string) => hiddenKey(key) ? `${prefix}${key}=${HIDDEN}` : match)
   }
-  function redact(value: unknown, key = '', depth = 0): unknown {
+  function redact(value: unknown, key = '', depth = 0, path = '', request = false): unknown {
     if (hiddenKey(key)) return HIDDEN
     if (depth > 30) return '[内容过深，已省略]'
     if (typeof value === 'string') return text(value)
     if (jsonApi.isRawJSON?.(value)) return value
-    if (Array.isArray(value)) return value.map(part => redact(part, '', depth + 1))
+    if (Array.isArray(value)) return value.map(part => redact(part, '', depth + 1, `${path}[]`, request))
     if (value && typeof value === 'object') {
       const object = value as Record<string, unknown>
       return Object.fromEntries(Object.entries(object).map(([name, part]) => [name,
-        object.type === 'literal' && name === 'value' ? HIDDEN : redact(part, name, depth + 1),
+        request && isAuthConfig(path) && authMetadata.has(name) && typeof part === 'string' ? text(part)
+          : object.type === 'literal' && name === 'value' ? HIDDEN
+            : redact(part, name, depth + 1, path ? `${path}.${name}` : name, request),
       ]))
     }
     return value
   }
-  function body(value: string): string {
-    try { return JSON.stringify(redact(parse(value)), null, 2) } catch { return text(value) }
+  function body(value: string, request = false): string {
+    try { return JSON.stringify(redact(parse(value), '', 0, '', request), null, 2) } catch { return text(value) }
   }
   function safeHeaders(values: Record<string, string>): Record<string, string> {
     return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, hiddenKey(key) ? HIDDEN : text(value)]))
   }
   const trace: RequestTrace = { at: new Date().toISOString(), elapsedMs: 0, completed: false, error: null,
-    request: { method, url: text(url), headers: safeHeaders(headers), body: payload === undefined ? null : body(payload) }, response: null }
+    request: { method, url: text(url), headers: safeHeaders(headers), body: payload === undefined ? null : body(payload, true) }, response: null }
   return {
     trace,
     received(response: Response, content: string | null) {

@@ -696,6 +696,120 @@ test('identity-scoped APIs validate configuration and reject missing identity wi
   }
 })
 
+test('UAP GET query credentials and signed headers gate SQL by active staffCode',
+  { skip: !process.env.TEST_PG_URL && 'set TEST_PG_URL to run integration tests' }, async t => {
+    const staffNbr = 'test-uap-client'
+    const password = 'test-uap-password'
+    const token = 'test-uap-user-token'
+    let result: JsonObject = { code: 200, data: { state: 'A', staffCode: '00103741' } }
+    let received: { method: string | undefined; url: URL; headers: IncomingMessage['headers'] } | undefined
+    const upstream = await provider((req, res) => {
+      received = { method: req.method, url: new URL(req.url!, 'http://localhost'), headers: req.headers }
+      const callTime = String(req.headers.authcalltime)
+      const passwordDigest = createHash('md5').update(password).digest('hex')
+      const digest = createHash('md5').update(staffNbr + passwordDigest + callTime).digest('hex')
+      const valid = req.method === 'GET' && received.url.searchParams.get('userToken') === token
+        && req.headers.authstaffnbr === staffNbr && req.headers.authloginarea === 'sz.js.cn'
+        && /^\d{13}$/.test(callTime) && req.headers.authdigest === digest
+      res.writeHead(valid ? 200 : 400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(valid ? result : { code: 400, msg: 'Invalid query credential or signature' }))
+    })
+    const f = fixture()
+    let cookie = ''
+    async function adminCall(path: string, body: unknown, credential = token) {
+      const response = await f.app.request(path, { method: 'POST', headers: {
+        cookie, 'X-Requested-With': 'DataBridge', 'Content-Type': 'application/json',
+        'X-DataBridge-Test-Credential': credential,
+      }, body: JSON.stringify(body) })
+      cookie = response.headers.get('set-cookie')?.split(';')[0] ?? cookie
+      return { status: response.status, body: await response.json() }
+    }
+    try {
+      const url = new URL(process.env.TEST_PG_URL!)
+      const source = f.sources.save(undefined, {
+        name: 'uap-test', host: url.hostname, port: Number(url.port || 5432), database: url.pathname.slice(1),
+        username: decodeURIComponent(url.username), password: decodeURIComponent(url.password) || 'unused',
+      })
+      const externalAuth = authConfig(upstream.url, {
+        method: 'GET', inputHeader: 'usertoekn', inputPrefix: '', tokenLocation: 'query', tokenName: 'userToken', tokenPrefix: '',
+        headers: { authstaffnbr: staffNbr, authloginarea: 'sz.js.cn' },
+        dynamicHeaders: {
+          authcalltime: { type: 'timestamp', unit: 'milliseconds' },
+          authdigest: { type: 'digest', algorithm: 'md5', encoding: 'hex', parts: [
+            { type: 'literal', value: staffNbr },
+            { type: 'digest', algorithm: 'md5', encoding: 'hex', parts: [{ type: 'literal', value: password }] },
+            { type: 'timestamp', unit: 'milliseconds' },
+          ] },
+        },
+        successPath: 'code', successValue: 200, successConditions: [{ path: 'data.state', value: 'A' }],
+        bindings: [{ name: '_auth_staff_code', path: 'data.staffCode', type: 'string' }], timeoutSeconds: 10,
+      })
+      const definition: JsonObject = {
+        name: 'uap-staff', code: 'uap_staff', path: '/open/uap-staff', mode: 'REALTIME', auth: 'EXTERNAL',
+        externalAuth, datasourceId: source.id, params: [], enabled: true,
+        sql: `WITH staff_info(staff_no, display_name) AS (VALUES ('00103741', 'Test A'), ('00999999', 'Test B'))
+          SELECT * FROM staff_info t WHERE t.staff_no = :_auth_staff_code`,
+      }
+      f.apis.save(undefined, definition)
+      const pool = t.mock.method(f.sources, 'pool')
+      await f.auth.bootstrap()
+      assert.equal((await adminCall('/auth/login', { username: 'admin', password: 'test-admin-password' })).status, 200)
+
+      await t.test('admin POST tests send GET with the exact userToken query name and Python-compatible signature', async () => {
+        const verified = await adminCall('/admin/external-auth/test', { externalAuth })
+        assert.equal(verified.status, 200)
+        assert.equal(verified.body.externalAuthTrace.request.method, 'GET')
+        assert.equal(received!.method, 'GET')
+        assert.deepEqual([...received!.url.searchParams], [['userToken', token]])
+        assert.equal(received!.headers.usertoekn, undefined)
+        assert.equal(received!.headers['x-databridge-test-credential'], undefined)
+        assert.deepEqual(verified.body.externalAuthTrace.checks.map((check: { path: string; matched: boolean }) =>
+          [check.path, check.matched]), [['code', true], ['data.state', true]])
+        assert.doesNotMatch(JSON.stringify(verified.body), /test-uap-user-token|test-uap-password/)
+        assert.equal(pool.mock.callCount(), 0, 'standalone authentication must not query the data source')
+
+        const typo = await adminCall('/admin/external-auth/test', { externalAuth: { ...externalAuth, tokenName: 'userToekn' } })
+        assert.equal(typo.status, 502)
+        assert.equal(typo.body.externalAuthTrace.response.status, 400)
+        assert.equal(new URL(typo.body.externalAuthTrace.request.url).searchParams.get('userToekn'), '[REDACTED]')
+      })
+      await t.test('active staffCode filters real SQL in both admin tests and public calls', async () => {
+        const preview = await adminCall('/admin/apis/test', { api: definition, params: {} })
+        assert.equal(preview.status, 200)
+        assert.deepEqual(preview.body.rows, [{ staff_no: '00103741', display_name: 'Test A' }])
+        const response = await f.app.request('/open/uap-staff', { headers: { usertoekn: token } })
+        assert.equal(response.status, 200)
+        assert.deepEqual((await response.json()).data, preview.body.rows)
+        assert.equal(pool.mock.callCount(), 2)
+        const before = pool.mock.callCount()
+        const forged = await f.app.request('/open/uap-staff?_auth_staff_code=00999999', { headers: { usertoekn: token } })
+        assert.equal(forged.status, 400)
+        assert.equal(pool.mock.callCount(), before)
+      })
+      await t.test('inactive, missing or incorrectly typed success fields and missing staffCode block SQL', async () => {
+        const before = pool.mock.callCount()
+        for (const [body, expected] of [
+          [{ code: 200, data: { state: 'D', staffCode: '00103741' } }, 401],
+          [{ code: 200, data: { staffCode: '00103741' } }, 502],
+          [{ code: '200', data: { state: 'A', staffCode: '00103741' } }, 401],
+          [{ code: 200, data: { state: 'A' } }, 502],
+          [{ code: 200, data: { state: 'A', staffCode: '' } }, 502],
+        ] as const) {
+          result = body
+          const response = await f.app.request('/open/uap-staff', { headers: { usertoekn: token } })
+          assert.equal(response.status, expected)
+          assert.equal((await response.json()).data, undefined)
+          const preview = await adminCall('/admin/apis/test', { api: definition })
+          assert.equal(preview.status, expected === 401 ? 400 : expected)
+          assert.equal(pool.mock.callCount(), before)
+        }
+      })
+    } finally {
+      await f.close()
+      await upstream.close()
+    }
+  })
+
 test('external identity reaches SQL, paging and admin previews without accepting a client-supplied subject',
   { skip: !process.env.TEST_PG_URL && 'set TEST_PG_URL to run integration tests' }, async t => {
     let calls = 0

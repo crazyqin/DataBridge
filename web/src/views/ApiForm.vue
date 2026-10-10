@@ -287,11 +287,11 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
         <span v-if="result" class="muted">返回 {{ result.count }} 行 · {{ result.elapsedMs }}ms{{ result.count === form.maxRows ? '（已截断到最大行数）' : '' }}</span>
       </div>
       <el-alert v-if="testError" :title="`测试请求未发送：${testError}`" type="error" :closable="false" show-icon />
-      <TestRequestTrace v-if="requestTrace" :trace="requestTrace" />
-      <el-divider v-if="result" content-position="left">SQL 查询结果</el-divider>
-      <pre v-if="result" class="result">{{ JSON.stringify(result.rows, null, 2) }}</pre>
       <el-divider v-if="authTrace && form.auth === 'EXTERNAL'" content-position="left">外部身份服务请求与响应</el-divider>
       <ExternalAuthTrace v-if="authTrace && form.auth === 'EXTERNAL'" :trace="authTrace" />
+      <el-divider v-if="result" content-position="left">SQL 查询结果</el-divider>
+      <pre v-if="result" class="result">{{ JSON.stringify(result.rows, null, 2) }}</pre>
+      <TestRequestTrace v-if="requestTrace" :trace="requestTrace" :external-auth="form.auth === 'EXTERNAL'" />
     </template>
   </el-card>
   <SyncHistoryDialog v-if="showHistory && saved?.id" :api="saved" @close="showHistory = false" />
