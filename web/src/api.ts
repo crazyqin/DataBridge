@@ -1,4 +1,5 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { createRequestTrace, type RequestTrace } from './request-trace'
 
 export type FieldType = 'string' | 'integer' | 'decimal' | 'boolean' | 'date' | 'datetime'
 export interface Field { name: string; type: FieldType; required: boolean }
@@ -56,26 +57,42 @@ export interface StoredRow { key: string; version: number; sorted: boolean; posi
 export const FIELD_TYPES: FieldType[] = ['string', 'integer', 'decimal', 'boolean', 'date', 'datetime']
 export const MODE_LABELS: Record<Mode, string> = { REALTIME: '实时查询', SNAPSHOT: '定时同步', MANUAL: '手工维护' }
 
-interface Options { method?: string; body?: unknown; rawBody?: string; silent?: boolean; headers?: Record<string, string> }
+interface Options { method?: string; body?: unknown; rawBody?: string; silent?: boolean; headers?: Record<string, string>; onTrace?: (trace: RequestTrace) => void }
 
 /** Calls the admin API; failures show a message and reject. */
 export async function request<T = unknown>(path: string, options: Options = {}): Promise<T> {
   const { method = 'GET', body, rawBody, silent = false } = options
   const payload = rawBody ?? (body === undefined ? undefined : JSON.stringify(body))
-  const response = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers: { 'X-Requested-With': 'DataBridge', ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
-    body: payload,
-  })
-  if (response.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('auth-expired'))
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}))
-    const message = error.message || `请求失败 (${response.status})`
-    if (!silent) ElMessage.error(message)
-    throw new RequestError(message, error.externalAuthTrace)
+  const headers = { 'X-Requested-With': 'DataBridge', ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers }
+  const recorder = options.onTrace ? createRequestTrace(method, new URL(path, window.location.href).toString(), headers, payload) : undefined
+  if (recorder) options.onTrace?.({ ...recorder.trace })
+  let failure: unknown
+  try {
+    const response = await fetch(path, { method, credentials: 'same-origin', headers, body: payload })
+    if (response.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event('auth-expired'))
+    recorder?.received(response, null)
+    const content = await response.text()
+    recorder?.received(response, content)
+    let result
+    try { result = content ? JSON.parse(content) : undefined } catch {}
+    if (!response.ok) {
+      const message = result?.message || `请求失败 (${response.status})`
+      if (!silent) ElMessage.error(message)
+      throw new RequestError(message, result?.externalAuthTrace)
+    }
+    if (response.status === 204) return undefined as T
+    if (result === undefined) {
+      const message = '服务器返回的内容不是有效的 JSON'
+      if (!silent) ElMessage.error(message)
+      throw new RequestError(message)
+    }
+    return result as T
+  } catch (error) {
+    failure = error
+    throw error
+  } finally {
+    if (recorder) options.onTrace?.(recorder.finish(failure))
   }
-  return response.status === 204 ? undefined as T : response.json()
 }
 
 export const formatTime = (value?: string | null) => value ? new Date(value).toLocaleString() : ''

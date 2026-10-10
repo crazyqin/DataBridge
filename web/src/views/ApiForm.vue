@@ -5,6 +5,8 @@ import { confirm, defaultExternalAuth, formatTimeInZone, MODE_LABELS, request, R
 import FieldTable from './FieldTable.vue'
 import ExternalAuthForm from './ExternalAuthForm.vue'
 import ExternalAuthTrace from './ExternalAuthTrace.vue'
+import TestRequestTrace from './TestRequestTrace.vue'
+import type { RequestTrace } from '../request-trace'
 import SyncHistoryDialog from './SyncHistoryDialog.vue'
 
 const props = defineProps<{ api: Api | null }>()
@@ -30,6 +32,8 @@ const saving = ref(false)
 const testing = ref(false)
 const testingAuth = ref(false)
 const authTrace = ref<AuthTrace>()
+const requestTrace = ref<RequestTrace>()
+const testError = ref('')
 const showHistory = ref(false)
 const testParams = ref('{}')
 const testCredential = ref('')
@@ -108,21 +112,25 @@ async function reload() {
 
 /** Tests the form as it is now; parameters are sent verbatim so large numbers stay exact. */
 async function test() {
+  result.value = undefined
+  authTrace.value = undefined
+  requestTrace.value = undefined
+  testError.value = ''
   let api: Api
   try {
     JSON.parse(testParams.value || '{}')
     api = payload()
   } catch (error) {
+    testError.value = error instanceof Error ? error.message : '测试配置无效'
     return ElMessage.error((error as Error).message)
   }
   testing.value = true
-  result.value = undefined
-  authTrace.value = undefined
   try {
     result.value = await request('/admin/apis/test', {
       method: 'POST',
       rawBody: `{"api":${JSON.stringify(api)},"params":${testParams.value.trim() || '{}'}}`,
       headers: api.auth === 'EXTERNAL' ? { 'X-DataBridge-Test-Credential': (api.externalAuth?.inputPrefix ?? '') + testCredential.value } : undefined,
+      onTrace: trace => { requestTrace.value = trace },
     })
     authTrace.value = result.value?.externalAuthTrace
   } catch (error) {
@@ -135,17 +143,21 @@ async function test() {
 }
 
 async function testAuth() {
+  result.value = undefined
+  authTrace.value = undefined
+  requestTrace.value = undefined
+  testError.value = ''
   let externalAuth
   try { externalAuth = externalForm.value?.value() ?? form.value.externalAuth } catch (error) {
+    testError.value = error instanceof Error ? error.message : '身份验证配置无效'
     return ElMessage.error((error as Error).message)
   }
   testingAuth.value = true
-  authTrace.value = undefined
-  result.value = undefined
   try {
     const response = await request<{ externalAuthTrace: AuthTrace }>('/admin/external-auth/test', {
       method: 'POST', body: { externalAuth },
       headers: { 'X-DataBridge-Test-Credential': (externalAuth?.inputPrefix ?? '') + testCredential.value },
+      onTrace: trace => { requestTrace.value = trace },
     })
     authTrace.value = response.externalAuthTrace
   } catch (error) {
@@ -274,7 +286,11 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
         <el-button v-if="sourced" :loading="testing" :disabled="testingAuth" @click="test">执行 SQL 测试</el-button>
         <span v-if="result" class="muted">返回 {{ result.count }} 行 · {{ result.elapsedMs }}ms{{ result.count === form.maxRows ? '（已截断到最大行数）' : '' }}</span>
       </div>
+      <el-alert v-if="testError" :title="`测试请求未发送：${testError}`" type="error" :closable="false" show-icon />
+      <TestRequestTrace v-if="requestTrace" :trace="requestTrace" />
+      <el-divider v-if="result" content-position="left">SQL 查询结果</el-divider>
       <pre v-if="result" class="result">{{ JSON.stringify(result.rows, null, 2) }}</pre>
+      <el-divider v-if="authTrace && form.auth === 'EXTERNAL'" content-position="left">外部身份服务请求与响应</el-divider>
       <ExternalAuthTrace v-if="authTrace && form.auth === 'EXTERNAL'" :trace="authTrace" />
     </template>
   </el-card>
