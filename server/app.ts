@@ -18,6 +18,7 @@ import { SourceError } from './query.ts'
 import type { Sources } from './sources.ts'
 import { ExternalAuth, TEST_CREDENTIAL_HEADER, validateExternalAuth } from './external-auth.ts'
 import type { ExternalAuthTrace } from './auth-diagnostics.ts'
+import { Xingchen } from './xingchen.ts'
 
 type Env = { Variables: { requestId: string; user: string; externalAuthTrace: ExternalAuthTrace | undefined } }
 type Ctx = Context<Env>
@@ -52,6 +53,7 @@ function withDetail(error: unknown): never {
 export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   const app = new Hono<Env>()
   const externalAuth = new ExternalAuth(config.maxConcurrentQueries)
+  const xingchen = new Xingchen(config.maxConcurrentQueries)
   let activeQueries = 0
 
   const isHttps = (c: Ctx) => config.secureCookies === 'auto'
@@ -180,9 +182,10 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     const input = await readJson(c)
     const api = body(input.api ?? null)
     if (api.mode === 'MANUAL') throw bad('手工维护模式没有 SQL')
-    // Only the data source, SQL and parameters matter here; the rest may still be unfilled.
+    // Names and routes may still be unfilled; validate the selected execution mode.
     const draft = apis.validate({
-      ...api, name: 'draft', code: 'draft', path: '/open/draft', mode: 'REALTIME', params: api.mode === 'REALTIME' ? api.params : [],
+      ...api, name: 'draft', code: 'draft', path: '/open/draft', mode: api.mode === 'XINGCHEN' ? 'XINGCHEN' : 'REALTIME',
+      params: api.mode === 'REALTIME' || api.mode === 'XINGCHEN' ? api.params : [],
     })
     const started = performance.now()
     const identity = draft.auth === 'EXTERNAL' ? await externalAuth.verify(draft.externalAuth, c.req.header(TEST_CREDENTIAL_HEADER),
@@ -191,6 +194,11 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       if (error instanceof HttpError && error.status === 401) throw bad(error.message)
       throw error
     }) : undefined
+    if (draft.mode === 'XINGCHEN') {
+      const response = await xingchen.forward(draft, body(input.params ?? {}), identity, { signal: c.req.raw.signal, blocking: true })
+      return admin(c, { elapsedMs: Math.round(performance.now() - started), response: parse(await response.text()),
+        externalAuthTrace: c.get('externalAuthTrace') })
+    }
     const rows = await apis.realtime(draft, body(input.params ?? {}), { truncate: true, identity }).catch(withDetail)
     return admin(c, { elapsedMs: Math.round(performance.now() - started), count: rows.length, rows,
       ...(c.get('externalAuthTrace') ? { externalAuthTrace: c.get('externalAuthTrace') } : {}) })
@@ -282,6 +290,9 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     let count = 0
     let error: string | null = null
     let externalAuthTrace: ExternalAuthTrace | undefined
+    let streamOwnsLog = false
+    const writeLog = (failure: string | null) => logs.write({ requestId, at, apiId: api.id, mode: api.mode,
+      elapsedMs: performance.now() - started, rowCount: count, ok: failure === null, error: failure, externalAuthTrace })
     try {
       if (!['PUBLIC', 'API_KEY', 'EXTERNAL'].includes(api.auth)) throw new HttpError(503, '访问方式无效，请重新配置接口')
       if (api.auth === 'API_KEY' && !auth.checkKey(c.req.header('X-API-Key'))) throw unauthorized('API Key 无效')
@@ -290,6 +301,12 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
         ? await externalAuth.verify(api.externalAuth, api.externalAuth ? c.req.header(api.externalAuth.inputHeader) : undefined,
           trace => { externalAuthTrace = trace }) : undefined
       const input: JsonObject = api.method === 'GET' ? c.req.query() : await readJson(c)
+      if (api.mode === 'XINGCHEN') {
+        if (api.auth !== 'EXTERNAL') throw new HttpError(503, '星辰转发必须使用外部身份验证')
+        const response = await xingchen.forward(api, input, identity, { signal: c.req.raw.signal, onStreamDone: writeLog })
+        streamOwnsLog = response.headers.get('content-type')?.startsWith('text/event-stream') ?? false
+        return response
+      }
       const paging = pagination(api, input)
       if (api.mode === 'REALTIME' && activeQueries >= config.maxConcurrentQueries) throw new HttpError(503, '服务繁忙，请稍后再试')
       activeQueries++
@@ -321,8 +338,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       error = e instanceof HttpError ? e.message : '服务器内部错误'
       throw e
     } finally {
-      logs.write({ requestId, at, apiId: api.id, mode: api.mode, elapsedMs: performance.now() - started,
-        rowCount: count, ok: error === null, error, externalAuthTrace })
+      if (!streamOwnsLog) writeLog(error)
     }
   })
 

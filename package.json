@@ -1,6 +1,6 @@
 {
   "name": "databridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.18" },
@@ -18,7 +18,8 @@
     "hono": "^4.13.9",
     "pg": "^8.23.0",
     "pg-cursor": "^2.22.0",
-    "postgres-array": "^3.0.4"
+    "postgres-array": "^3.0.4",
+    "sm-crypto-v2": "1.15.1"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

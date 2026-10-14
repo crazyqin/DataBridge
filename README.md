@@ -3,7 +3,7 @@
 轻量的数据 API 平台。配置 PostgreSQL 数据源和一条 `SELECT`，或者直接在页面上维护数据，就能以 `/open/**` 发布 GET / POST 接口。
 
 - **一个进程、一个数据卷**：Node.js 运行服务，平台数据存在内嵌的 SQLite，不需要额外数据库。
-- **三种数据模式**：实时查询、定时同步快照、手工维护。
+- **四种接口模式**：实时查询、定时同步快照、手工维护、星辰智能体转发。
 - **数据不失真**：大整数、`numeric` 精度、时间的小数秒和时区都原样输出。
 
 ## 部署
@@ -21,16 +21,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.0.0 .
+docker build --platform linux/amd64 -t databridge:1.1.0 .
 mkdir -p release
-docker save databridge:1.0.0 | gzip > release/databridge-1.0.0-amd64.tar.gz
+docker save databridge:1.1.0 | gzip > release/databridge-1.1.0-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.0.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.1.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.0.0` |
+| Image | `databridge:1.1.0` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -56,11 +56,11 @@ cat /data/initial-admin-password
 | `PORT` | `8080` | 监听端口 |
 | `DATA_DIR` | `./data`（镜像内为 `/data`） | SQLite 数据库、密钥和初始密码所在目录 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / 随机 | 只在首次启动时使用 |
-| `APP_SECRET_KEY` | 自动生成到 `DATA_DIR/secret.key` | 加密数据源密码的 AES-256 密钥，Base64 编码的 32 字节 |
+| `APP_SECRET_KEY` | 自动生成到 `DATA_DIR/secret.key` | 加密数据源密码、身份验证及星辰配置的 AES-256 密钥，Base64 编码的 32 字节 |
 | `TRUST_PROXY` | `false` | 位于反向代理之后时设为 `true`：用 `X-Forwarded-For` 做登录限流，按 `X-Forwarded-Proto` 设置 Secure Cookie 和 HSTS |
 | `COOKIE_SECURE` | `auto` | 设为 `true` 或 `false` 时，强制开启或关闭 Secure Cookie |
 | `LOG_RETENTION_DAYS` | `30` | 调用日志和同步详情保留天数 |
-| `MAX_CONCURRENT_QUERIES` | `20` | 同时执行的实时查询上限，超出返回 503 |
+| `MAX_CONCURRENT_QUERIES` | `20` | 实时查询、外部验证、星辰转发各自的并发上限，超出返回 503 |
 
 ## 创建第一个接口
 
@@ -85,9 +85,41 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001'
 
 出错时返回相应的 HTTP 状态码，响应体为 `{"code": 40001, "message": "…", "request_id": "…"}`。其中 `request_id` 与响应头 `X-Request-ID` 一致，也会记录在调用日志中。
 
+## 星辰智能体转发
+
+选择「接口模式 → 星辰智能体转发」，系统使用外部身份验证获取当前调用者的工号，无需数据源或 SQL。平台基础地址、`app_id`、`api_key`、`public_key` 均由管理员在页面配置；仓库和镜像不包含真实地址、密钥或样例个人信息。
+
+1. 配置上方外部身份验证，填写验证地址和成功条件。在身份映射中将验证响应的工号路径（例如 `data.staffCode`）映射到 `_auth_staff_code`，类型选 `string`，保留工号前导零。
+2. 填写平台基础地址（包含 `/v1`，例如 `https://agent.example.com/v1`）、应用 ID、API Key 和 `04` 开头的 130 位十六进制 SM2 公钥。系统发送到 `{基础地址}/chat-messages/{app_id}`。
+3. 选择工号身份参数。每次请求使用 SM2 C1C3C2 加密紧凑 UTF-8 JSON：`{"staff_code":"<已验证工号>","iat":<Unix秒>,"nonce":"<16字节随机数的base64url>"}`。按文档已实测的 Python 格式输出原始 `x||y||C3||C2`（不带 `04` 点前缀、非 ASN.1），无填充 base64url 编码后加 `v2.`，放入 `Znt-Staff-Code`；`api_key` 放入 `Authorization: Bearer …`。
+4. OA 通讯录查询使用默认映射：调用者参数 `q` → 智能体变量 `q`（实际为 `input_data.q`），提问参数也选 `q`，同时填写顶层 `query`。其他应用可配置多个变量，值按声明类型转换；未传的可选变量不写入 `input_data`。
+5. 首次调用可省略 `conversation_id`，后续将平台返回的会话 ID 原样传回。默认 JSON 阻塞模式，也可选 SSE 流式。先「测试身份验证」，再「测试星辰转发」；编辑页测试统一用 blocking 模式便于查看完整结果，无需先保存。
+6. 启用并保存，调用者仅提交身份凭证和已声明的业务参数：
+
+```bash
+curl -X POST 'http://localhost:8080/open/contacts' \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"q":"示例查询","conversation_id":""}'
+```
+
+如果接口选 GET，则参数放在查询字符串；转发到星辰始终为 POST。默认生成如下平台请求体：
+
+```json
+{"input_data":{"q":"示例查询"},"query":"示例查询","mode":"blocking","conversation_id":""}
+```
+
+星辰转发成功时**直接返回平台 JSON 或 SSE**，不使用数据查询接口的 `data/meta` 包装，不支持 DataBridge 分页。JSON 中的 `answer` 保持字符串格式：通讯录应用通常需要调用方再次解析为数组，`"[]"` 表示无结果。SSE 按原始字节转发，客户端需处理 `message`、`message_end` 及 `error` 事件；HTTP 200 仍可能包含业务错误。流内错误不自动重试，以免重复提交对话；需要重试时由调用方决定。
+
+平台请求默认超时 60 秒，可设为 1～120 秒，覆盖整个响应读取过程；单次响应最多 8 MiB。平台 HTTP 错误、重定向或异常响应返回 502，连接／读取超时返回 504，转发并发耗尽返回 503。SSE 已开始后若传输失败，追加 `event: "error"`、`code: "databridge_forward_error"` 的 data 事件。断开连接会取消上游请求；不跟随重定向，不关闭 HTTPS 证书校验，不转发调用者的其他请求头。
+
+星辰配置整体加密存储。平台错误正文、凭据和地址不写入转发错误日志；测试诊断中的平台连接配置脱敏。成功结果只返回给调用者，调用日志不保存智能体回复；身份服务诊断沿用管理员可查看的现有机制。内网联调需在能访问平台的部署环境进行，本项目以本地模拟服务和独立 SM2 解密验证协议。
+
 ## 外部身份验证
 
 API 的「访问方式」可以选择「外部身份验证」，复用已有的身份服务。每个 API 独立配置验证请求、成功条件和响应字段映射；不要求特定客户端、凭证名称或返回结构，也无需为每个调用者创建平台 API Key。
+
+编辑页按「调用者凭证 → 身份服务 → 成功条件 → 身份字段」四步配置。可一键填入 Bearer、查询参数或 JSON 传递方式，固定请求头通过表格填写，成功值选择文本、数字、布尔或空值，无需手写 JSON 引号。签名和附加请求体收在折叠区；常用签名生成器可根据 clientId、clientSecret 和三个请求头名称生成 `MD5(clientId + MD5(clientSecret) + timestamp)`。已有复杂动态 Header 配置仍可直接编辑。
 
 支持以下配置：
 
@@ -115,7 +147,7 @@ GET 验证请求支持通过 Header 或 URL 查询参数传递凭证；JSON 和�
 
 摘要支持 `md5`、`sha256`、`sha512`，编码支持 `hex`（默认，小写）和 `base64`。同一次请求中所有时间戳表达式使用同一个时间点；每次请求重新计算。动态值覆盖同名固定 Header，不能与 Header 方式的目标凭证同名。配置最多 20 个动态 Header、16 KiB、100 个表达式节点，嵌套最多 6 层；不执行自定义脚本。
 
-例如，验证服务需要固定 `X-Client-Id` 和 `X-Region`，并要求 `X-Call-Time` 为毫秒时间戳、`X-Digest` 为 `MD5(clientId + MD5(clientSecret) + timestamp)`。先在「附加 Header」填写：
+例如，验证服务需要固定 `X-Client-Id` 和 `X-Region`，并要求 `X-Call-Time` 为毫秒时间戳、`X-Digest` 为 `MD5(clientId + MD5(clientSecret) + timestamp)`。可使用签名生成器，或在「附加请求头」表格中填写对应名称和值（下面是等价 JSON 配置）：
 
 ```json
 {"X-Client-Id":"client-id","X-Region":"region-a"}
@@ -141,9 +173,9 @@ GET 验证请求支持通过 Header 或 URL 查询参数传递凭证；JSON 和�
 
 如果服务通过 GET 的 `access_token` 接收用户凭证，选择「查询参数」，目标字段填 `access_token`，目标前缀留空即可。管理员配置的密钥随验证配置加密保存，实际调用凭证仍从请求的来源 Header 提取。
 
-成功判定值使用 JSON 格式，例如 `true`、`0`、`"ok"`；字符串 `"0"` 与数字 `0` 不相等。点分路径支持嵌套对象和数组下标，例如 `data.user.id`、`data.groups.0.id`；字段名包含点时需在身份服务端提供其他字段名。路径不存在、身份字段缺失或类型不匹配时拒绝查询，不使用默认身份。
+管理 API 的成功判定值使用 JSON 格式；页面通过类型选择器填写。例如 `true`、`0`、`"ok"`；字符串 `"0"` 与数字 `0` 不相等。点分路径支持嵌套对象和数组下标，例如 `data.user.id`、`data.groups.0.id`；字段名包含点时需在身份服务端提供其他字段名。路径不存在、身份字段缺失或类型不匹配时拒绝查询，不使用默认身份。
 
-「附加成功条件」最多 20 条，每条配置响应字段路径和预期 JSON 标量值。HTTP 状态、主成功判定和所有附加条件必须同时满足，之后才提取身份参数并查询数据。例如成功判定设置为 `code` 等于 `200`，再增加 `data.status` 等于 `"active"`，可以同时验证业务结果和身份状态。字符串区分大小写，JSON 字符串要带双引号；条件路径不能重复，也不能与主成功判定路径重复。字段缺失返回 502，值不匹配返回 401，不执行数据查询。主成功判定路径留空且没有附加条件时，仅检查 HTTP 状态。
+「附加成功条件」最多 20 条，每条配置响应字段路径和预期 JSON 标量值。HTTP 状态、主成功判定和所有附加条件必须同时满足，之后才提取身份参数并查询数据。例如成功判定设置为 `code` 等于 `200`，再增加 `data.status` 等于 `"active"`，可以同时验证业务结果和身份状态。字符串区分大小写；管理 API 的 JSON 字符串要带双引号，页面选「文本」后直接输入；条件路径不能重复，也不能与主成功判定路径重复。字段缺失返回 502，值不匹配返回 401，不执行数据查询。主成功判定路径留空且没有附加条件时，仅检查 HTTP 状态。
 
 对应的配置字段示例：
 
@@ -182,7 +214,7 @@ WHERE p.subject_id = :_auth_subject
 ORDER BY o.order_id
 ```
 
-身份参数名以 `_auth_` 开头，字段名和业务含义由配置决定。每项映射都必须在 SQL 中使用；不要在普通「请求参数」中再次声明。类型沿用平台字段类型，字符串保留前导零，大整数按原精度处理；映射结果通过 PostgreSQL 参数绑定，不拼接到 SQL 中。平台检查参数声明和类型，具体数据范围仍由 SQL 中的 `WHERE` / `JOIN` 条件决定。
+身份参数名以 `_auth_` 开头，字段名和业务含义由配置决定。实时查询的每项映射都必须在 SQL 中使用；不要在普通「请求参数」中再次声明。类型沿用平台字段类型，字符串保留前导零，大整数按原精度处理；映射结果通过 PostgreSQL 参数绑定，不拼接到 SQL 中。平台检查参数声明和类型，具体数据范围仍由 SQL 中的 `WHERE` / `JOIN` 条件决定。
 
 调用示例：
 
@@ -190,7 +222,7 @@ ORDER BY o.order_id
 curl -H "Authorization: Bearer $ACCESS_TOKEN" 'http://localhost:8080/open/orders?page=1&pageSize=50'
 ```
 
-GET 查询字符串和 POST 请求体均不能覆盖身份参数。分页数据和总数使用同一份已验证身份，每次请求只验证一次。所有数据模式都可使用外部验证作为访问门槛；**身份参数映射仅支持实时查询**，无映射时仅验证身份，不自动过滤记录。
+GET 查询字符串和 POST 请求体均不能覆盖身份参数。分页数据和总数使用同一份已验证身份，每次请求只验证一次。所有数据模式都可使用外部验证作为访问门槛；**身份参数映射支持实时查询和星辰转发**，无映射时仅验证身份，不自动过滤记录。
 
 验证配置由管理员在 API 编辑页保存，数据库中加密存储，跟随 API 的版本号处理并发修改。实际凭证只随调用请求传入，不保存到 API 配置中。编辑器的 SQL 测试使用相同验证流程；输入不含前缀的测试凭证，执行后清空。
 

@@ -24,7 +24,7 @@ const columns = computed(() => api.value?.mode === 'MANUAL'
   : [...new Set(rows.value.flatMap(row => Object.keys(row.data)))])
 
 async function loadApis() {
-  apis.value = (await request<Api[]>('/admin/apis')).filter(item => item.mode !== 'REALTIME')
+  apis.value = (await request<Api[]>('/admin/apis')).filter(item => ['SNAPSHOT', 'MANUAL'].includes(item.mode))
   if (!api.value) apiId.value = apis.value[0]?.id
   await loadRows()
 }

@@ -4,5 +4,8 @@ data/
 release/*.tar.gz
 /release/*.md
 /外部身份验证配置说明.md
+/doc/
+/release/
 .env
+.env.*
 .idea/

@@ -42,7 +42,7 @@ async function closeForm() {
   <ApiForm v-if="editing !== undefined" :api="editing" @close="closeForm" />
   <template v-else>
     <div class="page-head">
-      <div><h2>API 管理</h2><p>发布实时查询、定时同步或手工维护的数据接口</p></div>
+      <div><h2>API 管理</h2><p>发布数据接口或转发星辰智能体请求</p></div>
       <el-button type="primary" @click="editing = null">新增 API</el-button>
     </div>
     <el-card shadow="never">
@@ -51,7 +51,7 @@ async function closeForm() {
         <el-table-column label="地址" min-width="200">
           <template #default="{ row }"><code>{{ row.method }} {{ row.path }}</code></template>
         </el-table-column>
-        <el-table-column label="模式" width="100">
+        <el-table-column label="模式" width="150">
           <template #default="{ row }">{{ MODE_LABELS[row.mode as Api['mode']] }}</template>
         </el-table-column>
         <el-table-column label="访问" width="130">

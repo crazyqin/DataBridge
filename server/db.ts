@@ -102,6 +102,7 @@ const MIGRATIONS = [
     log_id INTEGER PRIMARY KEY REFERENCES request_log(id) ON DELETE CASCADE,
     detail TEXT NOT NULL
   );`,
+  `ALTER TABLE api ADD COLUMN xingchen TEXT;`,
 ]
 
 export type Db = DatabaseSync

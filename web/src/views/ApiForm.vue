@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
-import { computed, onMounted, ref } from 'vue'
-import { confirm, defaultExternalAuth, formatTimeInZone, MODE_LABELS, request, RequestError, type Api, type Datasource, type ExternalAuthTrace as AuthTrace } from '../api'
+import { computed, onMounted, ref, watch } from 'vue'
+import { confirm, defaultExternalAuth, defaultXingchen, formatTimeInZone, MODE_LABELS, request, RequestError, type Api, type Datasource, type ExternalAuthTrace as AuthTrace } from '../api'
+import XingchenForm from './XingchenForm.vue'
 import FieldTable from './FieldTable.vue'
 import ExternalAuthForm from './ExternalAuthForm.vue'
 import ExternalAuthTrace from './ExternalAuthTrace.vue'
@@ -14,7 +15,7 @@ const emit = defineEmits<{ close: [] }>()
 
 const blank: Api = {
   name: '', code: '', path: '/open/', method: 'GET', auth: 'API_KEY', userAgents: [], mode: 'REALTIME', datasourceId: null,
-  externalAuth: null,
+  externalAuth: null, xingchen: null,
   sql: '', params: [], fields: [], filters: [], keyFields: [], cron: '0 */30 * * * *',
   cronTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', allowEmpty: false,
   timeoutSeconds: 10, maxRows: 10000, enabled: false,
@@ -22,7 +23,7 @@ const blank: Api = {
 
 // Deep copy through JSON: the prop is a reactive proxy, which structuredClone rejects.
 const clone = (api: Api): Api => JSON.parse(JSON.stringify(api))
-const editable = (api: Api): Api => clone({ ...api, cronTimezone: api.cronTimezone || blank.cronTimezone, externalAuth: api.externalAuth ?? defaultExternalAuth() })
+const editable = (api: Api): Api => clone({ ...api, cronTimezone: api.cronTimezone || blank.cronTimezone, externalAuth: api.externalAuth ?? defaultExternalAuth(), xingchen: api.xingchen ?? defaultXingchen() })
 
 const saved = ref<Api | null>(props.api)
 const form = ref<Api>(editable({ ...blank, ...props.api }))
@@ -42,9 +43,22 @@ const externalConfig = computed({
   get: () => form.value.externalAuth ?? defaultExternalAuth(),
   set: value => { form.value.externalAuth = value },
 })
-const result = ref<{ elapsedMs: number; count: number; rows: unknown[]; externalAuthTrace?: AuthTrace }>()
+const result = ref<{ elapsedMs: number; count?: number; rows?: unknown[]; response?: unknown; externalAuthTrace?: AuthTrace }>()
 
-const sourced = computed(() => form.value.mode !== 'MANUAL')
+const sourced = computed(() => ['REALTIME', 'SNAPSHOT'].includes(form.value.mode))
+const forwarding = computed(() => form.value.mode === 'XINGCHEN')
+const parameterized = computed(() => form.value.mode === 'REALTIME' || forwarding.value)
+watch(() => form.value.mode, mode => {
+  if (mode !== 'XINGCHEN') return
+  form.value.auth = 'EXTERNAL'
+  form.value.timeoutSeconds = 60
+  if (!form.value.params.length) form.value.params = [
+    { name: 'q', type: 'string', required: true }, { name: 'conversation_id', type: 'string', required: false },
+  ]
+  const auth = form.value.externalAuth ?? defaultExternalAuth()
+  if (!auth.bindings.length) auth.bindings.push({ name: '_auth_staff_code', path: '', type: 'string' })
+  form.value.externalAuth = auth
+})
 
 function listsOf(api: Api) {
   return { userAgents: api.userAgents.join('\n'), keyFields: api.keyFields.join(', '), filters: api.filters.join(', ') }
@@ -57,11 +71,12 @@ function payload(): Api {
   return {
     ...api,
     externalAuth: api.auth === 'EXTERNAL' ? externalForm.value?.value() ?? api.externalAuth : null,
+    xingchen: forwarding.value ? api.xingchen : null,
     userAgents: split(lists.value.userAgents, /\n/),
     keyFields: api.mode === 'SNAPSHOT' ? split(lists.value.keyFields, /[,，]/) : [],
-    filters: api.mode === 'REALTIME' ? [] : split(lists.value.filters, /[,，]/),
-    params: api.mode === 'REALTIME' ? api.params : [],
-    fields: api.mode === 'REALTIME' ? [] : api.fields,
+    filters: parameterized.value ? [] : split(lists.value.filters, /[,，]/),
+    params: parameterized.value ? api.params : [],
+    fields: parameterized.value ? [] : api.fields,
     datasourceId: sourced.value ? api.datasourceId : null,
     sql: sourced.value ? api.sql : null,
   }
@@ -76,7 +91,7 @@ function fillCode() {
 /** Asks before a save that drops or rewrites stored rows. */
 async function confirmDataChanges(next: Api): Promise<boolean> {
   const before = saved.value
-  if (!before?.id || before.mode === 'REALTIME') return true
+  if (!before?.id || ['REALTIME', 'XINGCHEN'].includes(before.mode)) return true
   if (before.mode !== next.mode) {
     return confirm(`切换数据模式会删除「${MODE_LABELS[before.mode]}」下已有的全部本地数据。`, '确认切换模式')
   }
@@ -201,7 +216,7 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
       </el-row>
       <el-form-item label="访问方式">
         <el-radio-group v-model="form.auth">
-          <el-radio value="API_KEY">需要 API Key</el-radio><el-radio value="PUBLIC">公开访问</el-radio>
+          <el-radio value="API_KEY" :disabled="forwarding">需要 API Key</el-radio><el-radio value="PUBLIC" :disabled="forwarding">公开访问</el-radio>
           <el-radio value="EXTERNAL">外部身份验证</el-radio>
         </el-radio-group>
       </el-form-item>
@@ -209,13 +224,15 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
         <el-input v-model="lists.userAgents" type="textarea" :rows="2" placeholder="每行一条，留空不限制；末尾 * 表示前缀匹配，如 MyClient/*" />
         <span class="muted">User-Agent 由客户端自行设置，只能做兼容性限制，不能代替身份认证。</span>
       </el-form-item>
-      <el-form-item label="数据模式">
+      <el-form-item label="接口模式">
         <el-radio-group v-model="form.mode">
           <el-radio-button v-for="(label, mode) in MODE_LABELS" :key="mode" :value="mode">{{ label }}</el-radio-button>
         </el-radio-group>
       </el-form-item>
 
       <ExternalAuthForm v-if="form.auth === 'EXTERNAL'" ref="externalForm" v-model="externalConfig" :mode="form.mode" />
+
+      <XingchenForm v-if="forwarding && form.xingchen" v-model="form.xingchen" :params="form.params" :bindings="externalConfig.bindings" />
 
       <template v-if="sourced">
         <el-form-item label="数据源">
@@ -229,9 +246,9 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
         </el-form-item>
       </template>
 
-      <el-form-item v-if="form.mode === 'REALTIME'" label="请求参数">
+      <el-form-item v-if="parameterized" label="请求参数">
         <FieldTable v-model="form.params" add-label="添加参数" />
-        <span class="muted">SQL 中用 :参数名 引用，业务参数需在这里声明类型；外部身份参数在验证配置中映射。</span>
+        <span class="muted">{{ forwarding ? '调用者可传入的业务参数；在上方配置它们对应的智能体变量。工号从身份验证结果取得。' : 'SQL 中用 :参数名 引用，业务参数需在这里声明类型；外部身份参数在验证配置中映射。' }}</span>
       </el-form-item>
 
       <template v-if="form.mode === 'SNAPSHOT'">
@@ -254,7 +271,7 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
         </el-form-item>
       </template>
 
-      <template v-if="form.mode !== 'REALTIME'">
+      <template v-if="!parameterized">
         <el-form-item :label="form.mode === 'MANUAL' ? '字段定义' : '字段类型'">
           <FieldTable v-model="form.fields" />
           <span v-if="form.mode === 'SNAPSHOT'" class="muted">可选；需要过滤的字段必须在这里声明类型。</span>
@@ -263,10 +280,10 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
       </template>
 
       <el-row :gutter="20">
-        <el-col v-if="sourced" :span="12">
-          <el-form-item label="查询超时 (秒)"><el-input-number v-model="form.timeoutSeconds" :min="1" :max="120" /></el-form-item>
+        <el-col v-if="sourced || forwarding" :span="12">
+          <el-form-item label="请求超时 (秒)"><el-input-number v-model="form.timeoutSeconds" :min="1" :max="120" /></el-form-item>
         </el-col>
-        <el-col :span="12"><el-form-item label="最大行数"><el-input-number v-model="form.maxRows" :min="1" :max="100000" />
+        <el-col v-if="!forwarding" :span="12"><el-form-item label="最大行数"><el-input-number v-model="form.maxRows" :min="1" :max="100000" />
           <span class="muted">非分页请求及同步的上限；分页请求每页不超过此值</span>
         </el-form-item></el-col>
       </el-row>
@@ -277,20 +294,20 @@ onMounted(async () => { sources.value = await request<Datasource[]>('/admin/data
     </el-form>
 
     <template v-if="sourced || form.auth === 'EXTERNAL'">
-      <el-divider content-position="left">{{ form.auth === 'EXTERNAL' ? sourced ? '测试身份验证与 SQL' : '测试身份验证' : '测试当前 SQL' }}（不需要先保存）</el-divider>
+      <el-divider content-position="left">{{ forwarding ? '测试星辰转发（使用 blocking 模式）' : form.auth === 'EXTERNAL' ? sourced ? '测试身份验证与 SQL' : '测试身份验证' : '测试当前 SQL' }}（不需要先保存）</el-divider>
       <div class="toolbar">
-        <el-input v-if="sourced && form.mode === 'REALTIME'" v-model="testParams" class="mono" placeholder='测试参数 JSON，如 {"id": "10001"}' style="max-width: 480px" />
+        <el-input v-if="parameterized" v-model="testParams" class="mono" :placeholder="forwarding ? '测试参数 JSON，如 {&quot;q&quot;: &quot;示例查询&quot;}' : '测试参数 JSON，如 {&quot;id&quot;: &quot;10001&quot;}'" style="max-width: 480px" />
         <el-input v-if="form.auth === 'EXTERNAL'" v-model="testCredential" type="password" autocomplete="off"
                   placeholder="测试凭证（不含前缀），本次测试后清空" style="max-width: 340px" />
         <el-button v-if="form.auth === 'EXTERNAL'" :loading="testingAuth" :disabled="testing" @click="testAuth">测试身份验证</el-button>
-        <el-button v-if="sourced" :loading="testing" :disabled="testingAuth" @click="test">执行 SQL 测试</el-button>
-        <span v-if="result" class="muted">返回 {{ result.count }} 行 · {{ result.elapsedMs }}ms{{ result.count === form.maxRows ? '（已截断到最大行数）' : '' }}</span>
+        <el-button v-if="sourced || forwarding" :loading="testing" :disabled="testingAuth" @click="test">{{ forwarding ? '测试星辰转发' : '执行 SQL 测试' }}</el-button>
+        <span v-if="result" class="muted">{{ result.count === undefined ? '转发完成' : `返回 ${result.count} 行` }} · {{ result.elapsedMs }}ms{{ result.count === form.maxRows ? '（已截断到最大行数）' : '' }}</span>
       </div>
       <el-alert v-if="testError" :title="`测试请求未发送：${testError}`" type="error" :closable="false" show-icon />
       <el-divider v-if="authTrace && form.auth === 'EXTERNAL'" content-position="left">外部身份服务请求与响应</el-divider>
       <ExternalAuthTrace v-if="authTrace && form.auth === 'EXTERNAL'" :trace="authTrace" />
-      <el-divider v-if="result" content-position="left">SQL 查询结果</el-divider>
-      <pre v-if="result" class="result">{{ JSON.stringify(result.rows, null, 2) }}</pre>
+      <el-divider v-if="result" content-position="left">{{ forwarding ? '星辰响应（answer 保留平台原始格式）' : 'SQL 查询结果' }}</el-divider>
+      <pre v-if="result" class="result">{{ JSON.stringify(result.response ?? result.rows, null, 2) }}</pre>
       <TestRequestTrace v-if="requestTrace" :trace="requestTrace" :external-auth="form.auth === 'EXTERNAL'" />
     </template>
   </el-card>

@@ -10,8 +10,9 @@ import { runQuery, SourceError } from './query.ts'
 import type { Sources } from './sources.ts'
 import { parseSql, positional } from './sql.ts'
 import { convertOptional, FIELD_TYPES, identity, rowKey, type Field, type FieldType } from './values.ts'
+import { validateXingchen, type XingchenConfig } from './xingchen.ts'
 
-export const MODES = ['REALTIME', 'SNAPSHOT', 'MANUAL'] as const
+export const MODES = ['REALTIME', 'SNAPSHOT', 'MANUAL', 'XINGCHEN'] as const
 export type Mode = (typeof MODES)[number]
 
 export interface Api {
@@ -22,6 +23,7 @@ export interface Api {
   method: 'GET' | 'POST'
   auth: 'API_KEY' | 'PUBLIC' | 'EXTERNAL'
   externalAuth: ExternalAuthConfig | null
+  xingchen: XingchenConfig | null
   userAgents: string[]
   mode: Mode
   datasourceId: number | null
@@ -57,7 +59,7 @@ function withRemark(row: Row, remark: string): Row {
 
 interface ApiRow {
   id: number; name: string; code: string; path: string; method: Api['method']; auth: Api['auth']; user_agents: string
-  external_auth: string | null
+  external_auth: string | null; xingchen: string | null
   mode: Mode; datasource_id: number | null; sql_text: string | null; params: string; fields: string; filters: string
   key_fields: string; cron: string | null; cron_timezone: string | null; allow_empty: number; timeout_seconds: number; max_rows: number; enabled: number
   version: number; sync_at: string | null; sync_status: string | null; sync_count: number | null; sync_error: string | null
@@ -67,6 +69,7 @@ interface ApiRow {
 const toApi = (row: ApiRow, config: Config): Api => ({
   id: row.id, name: row.name, code: row.code, path: row.path, method: row.method, auth: row.auth,
   externalAuth: row.external_auth ? parse(decrypt(config.secretKey, row.external_auth)) as unknown as ExternalAuthConfig : null,
+  xingchen: row.xingchen ? parse(decrypt(config.secretKey, row.xingchen)) as unknown as XingchenConfig : null,
   userAgents: JSON.parse(row.user_agents), mode: row.mode, datasourceId: row.datasource_id, sql: row.sql_text,
   params: JSON.parse(row.params), fields: JSON.parse(row.fields), filters: JSON.parse(row.filters),
   keyFields: JSON.parse(row.key_fields), cron: row.cron, cronTimezone: row.cron_timezone, allowEmpty: row.allow_empty === 1,
@@ -172,7 +175,8 @@ export class Apis {
   /** Validates a submitted configuration; the result is what gets stored. */
   validate(input: JsonObject) {
     const mode = choice(input, 'mode', '数据模式', MODES)
-    const sourced = mode !== 'MANUAL'
+    const sourced = mode === 'REALTIME' || mode === 'SNAPSHOT'
+    const parameters = mode === 'REALTIME' || mode === 'XINGCHEN'
     const values = {
       name: text(input, 'name', '接口名称', { max: 100 }),
       code: text(input, 'code', '接口编码', { max: 100, pattern: /^[A-Za-z][A-Za-z0-9_]*$/ }),
@@ -184,20 +188,22 @@ export class Apis {
       mode,
       datasourceId: sourced ? integer(input, 'datasourceId', '数据源', 1, Number.MAX_SAFE_INTEGER) : null,
       sql: sourced ? text(input, 'sql', 'SQL', { max: 100_000 }) : null,
-      params: mode === 'REALTIME' ? schema(input, 'params', '请求参数') : [],
-      fields: mode === 'REALTIME' ? [] : schema(input, 'fields', '字段定义'),
-      filters: mode === 'REALTIME' ? [] : names(input, 'filters', '过滤字段'),
+      params: parameters ? schema(input, 'params', '请求参数') : [],
+      fields: parameters ? [] : schema(input, 'fields', '字段定义'),
+      filters: parameters ? [] : names(input, 'filters', '过滤字段'),
       keyFields: mode === 'SNAPSHOT' ? names(input, 'keyFields', '唯一键') : [],
       cron: mode === 'SNAPSHOT' ? text(input, 'cron', '同步 Cron', { max: 100 }) : null,
       cronTimezone: mode === 'SNAPSHOT'
         ? text({ cronTimezone: input.cronTimezone ?? this.config.timezone }, 'cronTimezone', '同步时区', { max: 100 }) : null,
       allowEmpty: mode === 'SNAPSHOT' && flag(input, 'allowEmpty', '空结果覆盖', false),
-      timeoutSeconds: sourced ? integer(input, 'timeoutSeconds', '查询超时', 1, 120, 10) : 10,
+      timeoutSeconds: sourced || mode === 'XINGCHEN' ? integer(input, 'timeoutSeconds', '请求超时', 1, 120, mode === 'XINGCHEN' ? 60 : 10) : 10,
       maxRows: integer(input, 'maxRows', '最大行数', 1, 100_000, 10_000),
       enabled: flag(input, 'enabled', '启用状态', false),
     }
+    if (mode === 'XINGCHEN' && values.auth !== 'EXTERNAL') throw bad('星辰转发必须使用外部身份验证获取工号')
+    const xingchen = mode === 'XINGCHEN' ? validateXingchen(input.xingchen, values.params, values.externalAuth) : null
     const authBindings = values.externalAuth?.bindings ?? []
-    if (authBindings.length && mode !== 'REALTIME') throw bad('身份参数映射只支持实时查询；其他模式可仅验证身份')
+    if (authBindings.length && !parameters) throw bad('身份参数映射只支持实时查询或星辰转发；其他模式可仅验证身份')
     if (values.auth === 'EXTERNAL' && values.params.some(param => param.name.startsWith(AUTH_PARAM_PREFIX))) {
       throw bad(`${AUTH_PARAM_PREFIX} 开头的参数由外部身份验证提供，不能声明为请求参数`)
     }
@@ -228,7 +234,7 @@ export class Apis {
       }
       if (!next) throw bad('Cron 表达式永远不会触发')
     }
-    return values
+    return { ...values, xingchen }
   }
 
   save(id: number | undefined, input: JsonObject): Api {
@@ -237,7 +243,8 @@ export class Apis {
     const columns = [v.name, v.code, v.path, v.method, v.auth, stringify(v.userAgents), v.mode, v.datasourceId, v.sql,
       stringify(v.params), stringify(v.fields), stringify(v.filters), stringify(v.keyFields), v.cron, v.cronTimezone, v.allowEmpty ? 1 : 0,
       v.timeoutSeconds, v.maxRows, v.enabled ? 1 : 0,
-      v.externalAuth ? encrypt(this.config.secretKey, stringify(v.externalAuth)) : null]
+      v.externalAuth ? encrypt(this.config.secretKey, stringify(v.externalAuth)) : null,
+      v.xingchen ? encrypt(this.config.secretKey, stringify(v.xingchen)) : null]
     const saved = transaction(this.db, () => {
       if (this.db.prepare('SELECT 1 FROM api WHERE code = ? AND id IS NOT ?').get(v.code, id ?? null)) throw conflict('接口编码已存在')
       if (this.db.prepare('SELECT 1 FROM api WHERE path = ? AND method = ? AND id IS NOT ?').get(v.path, v.method, id ?? null)) {
@@ -245,8 +252,8 @@ export class Apis {
       }
       if (id === undefined) {
         const result = this.db.prepare(`INSERT INTO api (name, code, path, method, auth, user_agents, mode, datasource_id, sql_text,
-          params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, external_auth, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
+          params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, external_auth, xingchen, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
         return Number(result.lastInsertRowid)
       }
       const version = integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER)
@@ -254,7 +261,7 @@ export class Apis {
       if (current.version !== version) throw conflict('API 配置已被修改，请刷新后再保存')
       this.db.prepare(`UPDATE api SET name = ?, code = ?, path = ?, method = ?, auth = ?, user_agents = ?, mode = ?,
         datasource_id = ?, sql_text = ?, params = ?, fields = ?, filters = ?, key_fields = ?, cron = ?, cron_timezone = ?, allow_empty = ?,
-        timeout_seconds = ?, max_rows = ?, enabled = ?, external_auth = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(...columns, time, id)
+        timeout_seconds = ?, max_rows = ?, enabled = ?, external_auth = ?, xingchen = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(...columns, time, id)
       if (current.mode !== v.mode) {
         this.db.prepare('DELETE FROM api_row WHERE api_id = ?').run(id)
         this.db.prepare('UPDATE api SET sync_at = NULL, sync_status = NULL, sync_count = NULL, sync_error = NULL WHERE id = ?').run(id)
@@ -391,7 +398,7 @@ export class Apis {
 
   rows(id: number, page: number, pageSize: number, search = '') {
     const api = this.get(id)
-    if (api.mode === 'REALTIME') throw bad('实时查询模式没有本地数据')
+    if (api.mode === 'REALTIME' || api.mode === 'XINGCHEN') throw bad('当前模式没有本地数据')
     const query = search.trim()
     if (query.length > 200) throw bad('搜索内容不能超过 200 个字符')
     const offset = (page - 1) * pageSize
@@ -474,7 +481,7 @@ export class Apis {
 
   updateRemark(id: number, key: string, version: number, remark: unknown) {
     const api = this.get(id)
-    if (api.mode === 'REALTIME') throw bad('实时查询模式没有本地数据')
+    if (api.mode === 'REALTIME' || api.mode === 'XINGCHEN') throw bad('当前模式没有本地数据')
     if (typeof remark !== 'string' || remark.length > 2000) throw bad('备注必须是 2000 个字符以内的文本')
     const value = remark.trim()
     const existing = this.db.prepare('SELECT data FROM api_row WHERE api_id = ? AND row_key = ?').get(id, key) as { data: string } | undefined
@@ -509,11 +516,13 @@ export class Apis {
   // ---- open queries ----
 
   async query(api: Api, input: JsonObject, identity?: QueryIdentity): Promise<Row[]> {
+    if (api.mode === 'XINGCHEN') throw bad('星辰模式请使用转发接口')
     if (api.auth === 'EXTERNAL' && !identity) throw forbidden('缺少已验证的身份')
     return api.mode === 'REALTIME' ? this.realtime(api, input, { identity }) : this.local(api, input)
   }
 
   async queryPage(api: Api, input: JsonObject, page: number, pageSize: number, identity?: QueryIdentity): Promise<PageResult> {
+    if (api.mode === 'XINGCHEN') throw bad('星辰模式请使用转发接口')
     if (api.auth === 'EXTERNAL' && !identity) throw forbidden('缺少已验证的身份')
     if (api.mode !== 'REALTIME') return this.localPage(api, input, page, pageSize)
     const { sql, values, pool } = this.realtimeStatement(api, input, identity)

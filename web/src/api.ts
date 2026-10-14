@@ -3,7 +3,7 @@ import { createRequestTrace, type RequestTrace } from './request-trace'
 
 export type FieldType = 'string' | 'integer' | 'decimal' | 'boolean' | 'date' | 'datetime'
 export interface Field { name: string; type: FieldType; required: boolean }
-export type Mode = 'REALTIME' | 'SNAPSHOT' | 'MANUAL'
+export type Mode = 'REALTIME' | 'SNAPSHOT' | 'MANUAL' | 'XINGCHEN'
 export type AuthHeaderValue =
   | { type: 'literal'; value: string }
   | { type: 'timestamp'; unit: 'milliseconds' | 'seconds' }
@@ -43,9 +43,20 @@ export interface Datasource {
   ssl: 'disable' | 'require' | 'verify'; enabled: boolean; version: number
 }
 
+export interface XingchenConfig {
+  baseUrl: string; appId: string; apiKey: string; publicKey: string; staffCodeBinding: string
+  inputMappings: { parameter: string; variable: string }[]
+  queryParam: string; conversationParam: string; responseMode: 'blocking' | 'streaming'
+}
+export const defaultXingchen = (): XingchenConfig => ({
+  baseUrl: '', appId: '', apiKey: '', publicKey: '', staffCodeBinding: '_auth_staff_code',
+  inputMappings: [{ parameter: 'q', variable: 'q' }], queryParam: 'q', conversationParam: 'conversation_id', responseMode: 'blocking',
+})
+
 export interface Api {
   id?: number; name: string; code: string; path: string; method: 'GET' | 'POST'; auth: 'API_KEY' | 'PUBLIC' | 'EXTERNAL'
   externalAuth: ExternalAuthConfig | null
+  xingchen: XingchenConfig | null
   userAgents: string[]; mode: Mode; datasourceId: number | null; sql: string | null
   params: Field[]; fields: Field[]; filters: string[]; keyFields: string[]; cron: string | null; cronTimezone: string | null; allowEmpty: boolean
   timeoutSeconds: number; maxRows: number; enabled: boolean; version?: number
@@ -55,7 +66,7 @@ export interface Api {
 export interface StoredRow { key: string; version: number; sorted: boolean; position: number; remark: string; data: Record<string, unknown> }
 
 export const FIELD_TYPES: FieldType[] = ['string', 'integer', 'decimal', 'boolean', 'date', 'datetime']
-export const MODE_LABELS: Record<Mode, string> = { REALTIME: '实时查询', SNAPSHOT: '定时同步', MANUAL: '手工维护' }
+export const MODE_LABELS: Record<Mode, string> = { REALTIME: '实时查询', SNAPSHOT: '定时同步', MANUAL: '手工维护', XINGCHEN: '星辰智能体转发' }
 
 interface Options { method?: string; body?: unknown; rawBody?: string; silent?: boolean; headers?: Record<string, string>; onTrace?: (trace: RequestTrace) => void }
 

@@ -8,7 +8,7 @@ export interface RequestTrace {
 }
 
 const HIDDEN = '[REDACTED]'
-const sensitive = (key: string) => /authorization|cookie|token|secret|password|passwd|credential|digest|signature|(?:api|service)[_-]?key/i.test(key)
+const sensitive = (key: string) => /authorization|cookie|token|secret|password|passwd|credential|digest|signature|(?:api|service|public)[_-]?key|baseUrl|appId|znt-staff-code/i.test(key)
 const authMetadata = new Set(['inputHeader', 'inputPrefix', 'tokenLocation', 'tokenName', 'tokenPrefix'])
 const isAuthConfig = (path: string) => path === 'externalAuth' || path === 'api.externalAuth'
 const jsonApi = JSON as typeof JSON & { rawJSON?: (source: string) => object; isRawJSON?: (value: unknown) => boolean }

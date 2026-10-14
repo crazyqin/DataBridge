@@ -70,3 +70,13 @@ test('auth request metadata stays readable without exposing credentials or relax
     assert.doesNotMatch(JSON.stringify(recorder.finish()), /private-/)
   }
 })
+
+test('forwarding diagnostics redact platform address, application identifiers and encryption material', () => {
+  const recorder = createRequestTrace('POST', 'https://app.example.com/admin/apis/test', {}, JSON.stringify({
+    api: { xingchen: { baseUrl: 'https://private-agent.example.invalid/v1', appId: 'synthetic-app-id',
+      apiKey: 'synthetic-api-key', publicKey: 'synthetic-public-key', queryParam: 'q' } }, params: { q: 'example query' },
+  }))
+  recorder.received(new Response(), '{"message":"synthetic-api-key at https://private-agent.example.invalid/v1", "Znt-Staff-Code":"opaque-token"}')
+  assert.doesNotMatch(JSON.stringify(recorder.finish()), /private-agent|synthetic-app-id|synthetic-api-key|synthetic-public-key|opaque-token/)
+  assert.match(recorder.trace.request.body!, /example query/)
+})

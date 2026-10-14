@@ -26,3 +26,11 @@ pre.result { max-height: 360px; overflow: auto; background: #f4f6f8; padding: 12
 .sort-target.active { border-color: #2862c9; background: #e9f0ff; color: #2862c9; }
 .remark-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .remark-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.auth-guide { background: #edf4ff; border-radius: 6px; padding: 12px 16px; margin: 12px 0 20px; font-size: 13px; line-height: 1.7; color: #36577f; }
+.config-step { margin: 24px 0 16px; }
+.config-step strong { color: #2862c9; }
+.config-step p { margin: 6px 0; color: #63758d; font-size: 13px; line-height: 1.7; }
+.auth-advanced { margin: 18px 0; }
+.scalar-value { display: flex; align-items: center; gap: 8px; width: 100%; }
+.signature-builder { display: grid; gap: 10px; padding: 12px; background: #f4f6f8; margin-top: 10px; border-radius: 6px; }
+.signature-builder p { margin: 0; font-size: 13px; line-height: 1.6; }

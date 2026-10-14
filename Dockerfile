@@ -2,7 +2,10 @@ FROM node:22.23-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY . .
+COPY tsconfig.json vite.config.ts LICENSE ./
+COPY server ./server
+COPY test ./test
+COPY web ./web
 # Type-check, run unit tests (integration tests need TEST_PG_URL), build the admin UI.
 RUN npm run check && npm test && npm run build && npm prune --omit=dev
 
