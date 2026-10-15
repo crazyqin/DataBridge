@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FIELD_TYPES, type Field } from '../api'
+import { FIELD_TYPES, FIELD_TYPE_LABELS, type Field } from '../api'
 
 defineProps<{ addLabel?: string }>()
 const fields = defineModel<Field[]>({ required: true })
@@ -13,7 +13,7 @@ const fields = defineModel<Field[]>({ required: true })
       </el-table-column>
       <el-table-column label="类型" width="150">
         <template #default="{ row }">
-          <el-select v-model="row.type"><el-option v-for="type in FIELD_TYPES" :key="type" :value="type" :label="type" /></el-select>
+          <el-select v-model="row.type"><el-option v-for="type in FIELD_TYPES" :key="type" :value="type" :label="FIELD_TYPE_LABELS[type]" /></el-select>
         </template>
       </el-table-column>
       <el-table-column label="必填" width="70">

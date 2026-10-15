@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { confirm, request, type Datasource } from '../api'
 
 type Form = Omit<Datasource, 'id' | 'version'> & { id?: number; version?: number; password: string }
 
 const sources = ref<Datasource[]>([])
+const search = ref('')
+const loading = ref(false)
+const testing = ref<number>()
+const visible = computed(() => sources.value.filter(source => `${source.name} ${source.database}`.toLowerCase().includes(search.value.toLowerCase())))
 const form = ref<Form>()
 const saving = ref(false)
 
-const load = async () => { sources.value = await request<Datasource[]>('/admin/datasources') }
+const load = async () => { loading.value = true; try { sources.value = await request<Datasource[]>('/admin/datasources') } finally { loading.value = false } }
 onMounted(load)
 
 function edit(source?: Datasource) {
@@ -32,8 +36,11 @@ async function save() {
 }
 
 async function test(source: Datasource) {
-  const result = await request<{ version: string; elapsedMs: number }>(`/admin/datasources/${source.id}/test`, { method: 'POST' })
-  ElMessage.success(`连接成功（${result.elapsedMs}ms）：${result.version.split(' on ')[0]}`)
+  testing.value = source.id
+  try {
+    const result = await request<{ version: string; elapsedMs: number }>(`/admin/datasources/${source.id}/test`, { method: 'POST' })
+    ElMessage.success(`连接成功（${result.elapsedMs}ms）：${result.version.split(' on ')[0]}`)
+  } finally { testing.value = undefined }
 }
 
 async function remove(source: Datasource) {
@@ -45,11 +52,12 @@ async function remove(source: Datasource) {
 
 <template>
   <div class="page-head">
-    <div><h2>数据源</h2><p>PostgreSQL 数据源，请使用只授予 SELECT 权限的账号</p></div>
+    <div><p class="eyebrow">DATABASE CONNECTIONS</p><h2>数据源</h2><p>PostgreSQL 数据源，请使用只授予 SELECT 权限的账号</p></div>
     <el-button type="primary" @click="edit()">新增数据源</el-button>
   </div>
-  <el-card shadow="never">
-    <el-table :data="sources" stripe>
+  <el-card shadow="never" v-loading="loading">
+    <div class="table-toolbar"><el-input v-model="search" clearable placeholder="搜索名称或数据库" style="max-width: 320px" /><span class="muted toolbar-count">{{ visible.length }} 个数据源</span></div>
+    <el-table :data="visible" empty-text="暂无数据源，点击右上角新增">
       <el-table-column prop="name" label="名称" min-width="140" />
       <el-table-column label="地址" min-width="260">
         <template #default="{ row }">{{ row.host }}:{{ row.port }}/{{ row.database }}</template>
@@ -61,7 +69,7 @@ async function remove(source: Datasource) {
       </el-table-column>
       <el-table-column label="操作" width="200">
         <template #default="{ row }">
-          <el-button link type="primary" @click="test(row)">测试连接</el-button>
+          <el-button link type="primary" :loading="testing === row.id" @click="test(row)">测试连接</el-button>
           <el-button link @click="edit(row)">编辑</el-button>
           <el-button link type="danger" @click="remove(row)">删除</el-button>
         </template>
@@ -71,7 +79,7 @@ async function remove(source: Datasource) {
 
   <el-dialog :model-value="!!form" :title="form?.id ? '编辑数据源' : '新增数据源'" width="560px"
              :close-on-click-modal="!saving" :show-close="!saving" @close="form = undefined">
-    <el-form v-if="form" label-width="90px" @submit.prevent="save">
+    <el-form v-if="form" label-position="top" @submit.prevent="save">
       <el-form-item label="名称"><el-input v-model="form.name" /></el-form-item>
       <el-form-item label="主机">
         <div style="display: flex; gap: 8px; width: 100%">

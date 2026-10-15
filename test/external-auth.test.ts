@@ -665,7 +665,7 @@ test('identity-scoped APIs validate configuration and reject missing identity wi
     assert.equal(f.apis.get(api.id).auth, 'EXTERNAL')
     assert.equal(f.apis.get(api.id).externalAuth!.headers['x-service-key'], 'private-service-key')
     assert.ok(stringify(f.apis.get(api.id).externalAuth).includes('päss secret '))
-    const stored = f.db.prepare('SELECT external_auth FROM api WHERE id = ?').get(api.id) as { external_auth: string }
+    const stored = f.db.prepare('SELECT c.config AS external_auth FROM connection c JOIN api a ON a.auth_connection_id = c.id WHERE a.id = ?').get(api.id) as { external_auth: string }
     assert.doesNotMatch(stored.external_auth, /private-service-key|verify|_auth_subject/)
     assert.ok(!stored.external_auth.includes('päss secret '))
     const edited = f.apis.save(api.id, { ...base, version: api.version })
@@ -689,7 +689,7 @@ test('identity-scoped APIs validate configuration and reject missing identity wi
     assert.equal((await f.app.request('/open/legacy', { headers: { 'X-API-Key': key.key } })).status, 200)
     f.db.prepare('UPDATE api SET auth = ? WHERE id = ?').run('UNSUPPORTED', old.id)
     assert.equal((await f.app.request('/open/legacy')).status, 503)
-    f.db.prepare('UPDATE api SET external_auth = NULL WHERE id = ?').run(api.id)
+    f.db.prepare('UPDATE api SET auth_connection_id = NULL WHERE id = ?').run(api.id)
     assert.equal((await f.app.request('/open/scoped', { headers: { 'X-Access-Token': 'test-token' } })).status, 503)
   } finally {
     await f.close()

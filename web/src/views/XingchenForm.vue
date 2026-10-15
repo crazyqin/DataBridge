@@ -7,12 +7,8 @@ const strings = computed(() => props.params.filter(param => param.type === 'stri
 </script>
 
 <template>
-  <el-divider content-position="left">星辰平台连接</el-divider>
-  <el-alert type="info" :closable="false" show-icon title="先验证调用者身份，再加密工号并转发。平台凭据由管理员配置，加密保存。" />
-  <el-form-item label="基础地址" style="margin-top: 18px">
-    <el-input v-model="config.baseUrl" placeholder="https://agent.example.com/v1" autocomplete="off" />
-    <span class="muted">填写平台文档中的基础 URL（包含 /v1）；系统自动追加 /chat-messages/{app_id}。</span>
-  </el-form-item>
+  <el-divider content-position="left">应用凭据</el-divider>
+  <p class="muted">平台地址来自所选连接；以下凭据属于当前智能体应用，加密保存。</p>
   <el-form-item label="app_id"><el-input v-model="config.appId" placeholder="应用 ID" autocomplete="off" /></el-form-item>
   <el-form-item label="api_key"><el-input v-model="config.apiKey" type="password" show-password autocomplete="off" placeholder="应用 API Key" /></el-form-item>
   <el-form-item label="public_key">
@@ -22,7 +18,7 @@ const strings = computed(() => props.params.filter(param => param.type === 'stri
     <el-select v-model="config.staffCodeBinding" placeholder="选择已验证的工号">
       <el-option v-for="binding in bindings.filter(item => item.type === 'string')" :key="binding.name" :value="binding.name" :label="binding.name" />
     </el-select>
-    <span class="muted">来自上方身份映射，类型用 string 保留前导零。每次请求自动加密为 Znt-Staff-Code。</span>
+    <span class="muted">来自所选身份服务，类型用 string 保留前导零。每次请求自动加密为 Znt-Staff-Code。</span>
   </el-form-item>
   <el-divider content-position="left">智能体入参</el-divider>
   <el-form-item label="变量映射">
@@ -37,7 +33,7 @@ const strings = computed(() => props.params.filter(param => param.type === 'stri
         <el-table-column width="65"><template #default="{ $index }"><el-button link type="danger" @click="config.inputMappings.splice($index, 1)">删除</el-button></template></el-table-column>
       </el-table>
       <el-button text type="primary" @click="config.inputMappings.push({ parameter: '', variable: '' })">+ 添加映射</el-button>
-      <div class="muted">OA 通讯录查询：请求参数 q → 智能体变量 q，即 input_data.q。新增请求参数可在下方声明。</div>
+      <div class="muted">OA 通讯录查询：请求参数 q → 智能体变量 q，即 input_data.q。请求参数在上方声明。</div>
     </div>
   </el-form-item>
   <el-form-item label="提问 query">

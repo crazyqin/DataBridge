@@ -103,6 +103,14 @@ const MIGRATIONS = [
     detail TEXT NOT NULL
   );`,
   `ALTER TABLE api ADD COLUMN xingchen TEXT;`,
+  `CREATE TABLE connection (
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL UNIQUE, config TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  ALTER TABLE api ADD COLUMN auth_connection_id INTEGER REFERENCES connection(id) ON DELETE RESTRICT;
+  ALTER TABLE api ADD COLUMN xingchen_connection_id INTEGER REFERENCES connection(id) ON DELETE RESTRICT;
+  CREATE INDEX api_auth_connection ON api(auth_connection_id);
+  CREATE INDEX api_xingchen_connection ON api(xingchen_connection_id);`,
 ]
 
 export type Db = DatabaseSync

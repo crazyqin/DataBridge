@@ -53,8 +53,22 @@ export const defaultXingchen = (): XingchenConfig => ({
   inputMappings: [{ parameter: 'q', variable: 'q' }], queryParam: 'q', conversationParam: 'conversation_id', responseMode: 'blocking',
 })
 
+export type ConnectionKind = 'EXTERNAL_AUTH' | 'XINGCHEN'
+export interface ConnectionSummary {
+  id: number; kind: ConnectionKind; name: string; version: number; createdAt: string; updatedAt: string
+  usedBy: { id: number; name: string }[]; bindings: ExternalAuthConfig['bindings']; inputHeader: string; inputPrefix: string
+}
+export interface Connection extends Omit<ConnectionSummary, 'bindings' | 'inputHeader' | 'inputPrefix'> {
+  config: ExternalAuthConfig | { baseUrl: string }
+}
+export const CONNECTION_LABELS: Record<ConnectionKind, string> = { EXTERNAL_AUTH: '身份服务', XINGCHEN: '星辰平台' }
+
 export interface Api {
   id?: number; name: string; code: string; path: string; method: 'GET' | 'POST'; auth: 'API_KEY' | 'PUBLIC' | 'EXTERNAL'
+  authConnectionId: number | null
+  xingchenConnectionId: number | null
+  authConnectionName?: string | null
+  xingchenConnectionName?: string | null
   externalAuth: ExternalAuthConfig | null
   xingchen: XingchenConfig | null
   userAgents: string[]; mode: Mode; datasourceId: number | null; sql: string | null
@@ -65,6 +79,7 @@ export interface Api {
 
 export interface StoredRow { key: string; version: number; sorted: boolean; position: number; remark: string; data: Record<string, unknown> }
 
+export const FIELD_TYPE_LABELS: Record<FieldType, string> = { string: '文本 string', integer: '整数 integer', decimal: '小数 decimal', boolean: '布尔 boolean', date: '日期 date', datetime: '时间 datetime' }
 export const FIELD_TYPES: FieldType[] = ['string', 'integer', 'decimal', 'boolean', 'date', 'datetime']
 export const MODE_LABELS: Record<Mode, string> = { REALTIME: '实时查询', SNAPSHOT: '定时同步', MANUAL: '手工维护', XINGCHEN: '星辰智能体转发' }
 

@@ -164,13 +164,27 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   })
   app.post('/admin/datasources/:id/test', async c => admin(c, await sources.test(id(c.req.param('id'))).catch(withDetail)))
 
+  // ---- shared connections ----
+
+  app.get('/admin/connections', c => admin(c, apis.connections.list()))
+  app.get('/admin/connections/:id', c => admin(c, apis.connections.get(id(c.req.param('id')))))
+  app.post('/admin/connections', async c => admin(c, apis.connections.save(undefined, await readJson(c)), 201))
+  app.put('/admin/connections/:id', async c => admin(c, apis.connections.save(id(c.req.param('id')), await readJson(c))))
+  app.delete('/admin/connections/:id', c => {
+    apis.connections.remove(id(c.req.param('id')))
+    return c.body(null, 204)
+  })
+
   // ---- APIs ----
 
-  app.get('/admin/apis', c => admin(c, apis.list()))
+  app.get('/admin/apis', c => admin(c, apis.list().map(api => ({ ...api, externalAuth: null, xingchen: null }))))
   app.post('/admin/apis', async c => admin(c, apis.save(undefined, await readJson(c)), 201))
   /** Verify the edited identity configuration without requiring a data source or SQL. */
   app.post('/admin/external-auth/test', async c => {
-    const settings = validateExternalAuth((await readJson(c)).externalAuth)
+    const input = await readJson(c)
+    const settings = input.connectionId != null
+      ? apis.connections.auth(integer(input, 'connectionId', '身份服务连接', 1, Number.MAX_SAFE_INTEGER))
+      : validateExternalAuth(input.externalAuth)
     await externalAuth.verify(settings, c.req.header(TEST_CREDENTIAL_HEADER), trace => c.set('externalAuthTrace', trace)).catch(error => {
       if (error instanceof HttpError && error.status === 401) throw bad(error.message)
       throw error
@@ -188,7 +202,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       params: api.mode === 'REALTIME' || api.mode === 'XINGCHEN' ? api.params : [],
     })
     const started = performance.now()
-    const identity = draft.auth === 'EXTERNAL' ? await externalAuth.verify(draft.externalAuth, c.req.header(TEST_CREDENTIAL_HEADER),
+    const identity = draft.auth === 'EXTERNAL' ? await externalAuth.verify(apis.identityConfig(draft), c.req.header(TEST_CREDENTIAL_HEADER),
       trace => c.set('externalAuthTrace', trace)).catch(error => {
       // A bad test token does not mean the administrator's own session has expired.
       if (error instanceof HttpError && error.status === 401) throw bad(error.message)
@@ -298,7 +312,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       if (api.auth === 'API_KEY' && !auth.checkKey(c.req.header('X-API-Key'))) throw unauthorized('API Key 无效')
       if (!userAgentAllowed(api.userAgents, c.req.header('User-Agent'))) throw forbidden('User-Agent 不被允许')
       const identity = api.auth === 'EXTERNAL'
-        ? await externalAuth.verify(api.externalAuth, api.externalAuth ? c.req.header(api.externalAuth.inputHeader) : undefined,
+        ? await externalAuth.verify(apis.identityConfig(api), api.externalAuth ? c.req.header(api.externalAuth.inputHeader) : undefined,
           trace => { externalAuthTrace = trace }) : undefined
       const input: JsonObject = api.method === 'GET' ? c.req.query() : await readJson(c)
       if (api.mode === 'XINGCHEN') {

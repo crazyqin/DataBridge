@@ -19,13 +19,19 @@ export interface XingchenConfig {
   responseMode: 'blocking' | 'streaming'
 }
 
-export function validateXingchen(value: Json | undefined, params: Field[], auth: ExternalAuthConfig | null): XingchenConfig {
+export function validatePlatform(value: Json | undefined): { baseUrl: string } {
   const input = body(value ?? null)
   const baseUrl = text(input, 'baseUrl', '星辰平台基础地址', { max: 2000 }).replace(/\/+$/, '')
   try {
     const url = new URL(baseUrl)
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error()
   } catch { throw bad('星辰基础地址必须是 HTTP(S) 地址，不能包含凭据、查询参数或片段') }
+  return { baseUrl }
+}
+
+export function validateXingchen(value: Json | undefined, params: Field[], auth: ExternalAuthConfig | null): XingchenConfig {
+  const input = body(value ?? null)
+  const { baseUrl } = validatePlatform(input)
   const appId = text(input, 'appId', 'app_id', { max: 200, pattern: /^[A-Za-z0-9_-]+$/ })
   const apiKey = text(input, 'apiKey', 'api_key', { max: 4096, pattern: /^[\x21-\x7e]+$/ })
   const publicKey = text(input, 'publicKey', 'public_key', { max: 130, pattern: /^04[\da-fA-F]{128}$/ })

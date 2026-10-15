@@ -7,13 +7,18 @@ import Keys from './views/Keys.vue'
 import Logs from './views/Logs.vue'
 import Rows from './views/Rows.vue'
 import Sources from './views/Sources.vue'
+import Connections from './views/Connections.vue'
+import Overview from './views/Overview.vue'
 
-const pages = { sources: '数据源', apis: 'API 管理', rows: '数据维护', logs: '调用日志', keys: 'API Key' } as const
+const pages = { overview: '工作台', apis: '接口管理', rows: '数据维护', logs: '调用日志', connections: '连接管理', sources: '数据源', keys: '调用密钥' } as const
 type Page = keyof typeof pages
 
 const username = ref<string>()
 const checking = ref(true)
-const page = ref<Page>('apis')
+const page = ref<Page>('overview')
+const createApi = ref(false)
+function navigate(next: Page) { createApi.value = false; page.value = next }
+function startApi() { createApi.value = true; page.value = 'apis' }
 const login = reactive({ username: '', password: '', busy: false })
 const password = reactive({ open: false, current: '', next: '', confirm: '', busy: false })
 
@@ -60,8 +65,8 @@ onMounted(async () => {
 <template>
   <div v-if="!username && !checking" class="login-wrap">
     <el-card class="login-card">
-      <template #header><div class="brand">数桥 <span>DataBridge</span></div></template>
-      <el-form @submit.prevent="signIn">
+      <template #header><div class="brand"><span class="brand-symbol">DB</span> 数桥 <small>DataBridge</small></div></template>
+      <p class="login-intro">统一连接数据与智能体服务</p><el-form @submit.prevent="signIn">
         <el-form-item><el-input v-model="login.username" placeholder="管理员账号" autocomplete="username" /></el-form-item>
         <el-form-item><el-input v-model="login.password" type="password" show-password placeholder="密码" autocomplete="current-password" /></el-form-item>
         <el-button type="primary" native-type="submit" :loading="login.busy" style="width: 100%">登录</el-button>
@@ -70,15 +75,17 @@ onMounted(async () => {
   </div>
 
   <el-container v-else-if="username" class="layout">
-    <el-aside width="200px" class="sidebar">
-      <div class="sidebar-brand">数桥 <small>DataBridge</small></div>
-      <el-menu :default-active="page" background-color="#142235" text-color="#d7e0eb" active-text-color="#fff" @select="page = $event as Page">
-        <el-menu-item v-for="(label, key) in pages" :key="key" :index="key">{{ label }}</el-menu-item>
+    <el-aside width="224px" class="sidebar">
+      <div class="sidebar-brand"><span class="brand-symbol">DB</span><div>数桥 <small>DataBridge</small></div></div>
+      <el-menu :default-active="page" @select="navigate($event as Page)">
+        <el-menu-item-group title="工作空间"><el-menu-item v-for="key in (['overview', 'apis', 'rows', 'logs'] as const)" :key="key" :index="key"><span class="nav-dot"></span>{{ pages[key] }}</el-menu-item></el-menu-item-group>
+        <el-menu-item-group title="配置中心"><el-menu-item v-for="key in (['connections', 'sources', 'keys'] as const)" :key="key" :index="key"><span class="nav-dot"></span>{{ pages[key] }}</el-menu-item></el-menu-item-group>
       </el-menu>
+      <div class="sidebar-footer"><span class="status-dot"></span> DataBridge <span>v1.2</span></div>
     </el-aside>
     <el-container>
       <el-header class="topbar">
-        <strong>{{ pages[page] }}</strong>
+        <div class="breadcrumb"><span>{{ ['connections', 'sources', 'keys'].includes(page) ? '配置中心' : '工作空间' }}</span><span>/</span><strong>{{ pages[page] }}</strong></div><el-select class="mobile-nav" :model-value="page" aria-label="导航" @update:model-value="navigate($event as Page)"><el-option v-for="(label, key) in pages" :key="key" :value="key" :label="label" /></el-select>
         <div class="topbar-actions">
           <span>{{ username }}</span>
           <el-button text @click="password.open = true">修改密码</el-button>
@@ -86,8 +93,10 @@ onMounted(async () => {
         </div>
       </el-header>
       <el-main>
-        <Sources v-if="page === 'sources'" />
-        <Apis v-else-if="page === 'apis'" />
+        <Overview v-if="page === 'overview'" @navigate="navigate" @create="startApi" />
+        <Connections v-else-if="page === 'connections'" />
+        <Sources v-else-if="page === 'sources'" />
+        <Apis v-else-if="page === 'apis'" :initial-create="createApi" />
         <Rows v-else-if="page === 'rows'" />
         <Logs v-else-if="page === 'logs'" />
         <Keys v-else />

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Cron } from 'croner'
+import { Connections } from './connections.ts'
 import { decrypt, encrypt, type Config } from './config.ts'
 import { now, transaction, type Db } from './db.ts'
 import { bad, conflict, forbidden, HttpError, notFound } from './errors.ts'
@@ -22,6 +23,10 @@ export interface Api {
   path: string
   method: 'GET' | 'POST'
   auth: 'API_KEY' | 'PUBLIC' | 'EXTERNAL'
+  authConnectionId: number | null
+  xingchenConnectionId: number | null
+  authConnectionName: string | null
+  xingchenConnectionName: string | null
   externalAuth: ExternalAuthConfig | null
   xingchen: XingchenConfig | null
   userAgents: string[]
@@ -59,24 +64,31 @@ function withRemark(row: Row, remark: string): Row {
 
 interface ApiRow {
   id: number; name: string; code: string; path: string; method: Api['method']; auth: Api['auth']; user_agents: string
-  external_auth: string | null; xingchen: string | null
+  external_auth: string | null; xingchen: string | null; auth_connection_id: number | null; xingchen_connection_id: number | null
   mode: Mode; datasource_id: number | null; sql_text: string | null; params: string; fields: string; filters: string
   key_fields: string; cron: string | null; cron_timezone: string | null; allow_empty: number; timeout_seconds: number; max_rows: number; enabled: number
   version: number; sync_at: string | null; sync_status: string | null; sync_count: number | null; sync_error: string | null
   created_at: string; updated_at: string
 }
 
-const toApi = (row: ApiRow, config: Config): Api => ({
+const toApi = (row: ApiRow, config: Config, connections: Connections): Api => {
+  const auth = row.auth_connection_id ? connections.get(row.auth_connection_id, 'EXTERNAL_AUTH') : null
+  const platform = row.xingchen_connection_id ? connections.get(row.xingchen_connection_id, 'XINGCHEN') : null
+  const application = row.xingchen ? parse(decrypt(config.secretKey, row.xingchen)) as unknown as XingchenConfig : null
+  return ({
   id: row.id, name: row.name, code: row.code, path: row.path, method: row.method, auth: row.auth,
-  externalAuth: row.external_auth ? parse(decrypt(config.secretKey, row.external_auth)) as unknown as ExternalAuthConfig : null,
-  xingchen: row.xingchen ? parse(decrypt(config.secretKey, row.xingchen)) as unknown as XingchenConfig : null,
+  authConnectionId: row.auth_connection_id, xingchenConnectionId: row.xingchen_connection_id,
+  authConnectionName: auth?.name ?? null, xingchenConnectionName: platform?.name ?? null,
+  externalAuth: auth ? auth.config as ExternalAuthConfig : null,
+  xingchen: application ? { ...application, ...(platform?.config ?? {}) } : null,
   userAgents: JSON.parse(row.user_agents), mode: row.mode, datasourceId: row.datasource_id, sql: row.sql_text,
   params: JSON.parse(row.params), fields: JSON.parse(row.fields), filters: JSON.parse(row.filters),
   keyFields: JSON.parse(row.key_fields), cron: row.cron, cronTimezone: row.cron_timezone, allowEmpty: row.allow_empty === 1,
   timeoutSeconds: row.timeout_seconds, maxRows: row.max_rows, enabled: row.enabled === 1, version: row.version,
   syncAt: row.sync_at, syncStatus: row.sync_status, syncCount: row.sync_count, syncError: row.sync_error,
   createdAt: row.created_at, updatedAt: row.updated_at,
-})
+  })
+}
 
 const PG_TYPES: Record<FieldType, string> = {
   string: 'text', integer: 'int8', decimal: 'numeric', boolean: 'bool', date: 'date', datetime: 'timestamp',
@@ -119,6 +131,7 @@ function toPg(value: Json): string | null {
 }
 
 export class Apis {
+  readonly connections: Connections
   private readonly jobs = new Map<number, Cron>()
   private readonly syncing = new Set<number>()
   private readonly db: Db
@@ -129,23 +142,25 @@ export class Apis {
     this.db = db
     this.sources = sources
     this.config = config
+    this.connections = new Connections(db, config)
+    this.connections.migrateLegacy()
   }
 
   // ---- configuration ----
 
   list(): Api[] {
-    return (this.db.prepare('SELECT * FROM api ORDER BY id DESC').all() as unknown as ApiRow[]).map(row => this.withSchedule(toApi(row, this.config)))
+    return (this.db.prepare('SELECT * FROM api ORDER BY id DESC').all() as unknown as ApiRow[]).map(row => this.withSchedule(toApi(row, this.config, this.connections)))
   }
 
   get(id: number): Api {
     const row = this.db.prepare('SELECT * FROM api WHERE id = ?').get(id) as ApiRow | undefined
     if (!row) throw notFound('API 不存在')
-    return this.withSchedule(toApi(row, this.config))
+    return this.withSchedule(toApi(row, this.config, this.connections))
   }
 
   findOpen(path: string, method: string): Api | undefined {
     const row = this.db.prepare('SELECT * FROM api WHERE path = ? AND method = ? AND enabled = 1').get(path, method) as ApiRow | undefined
-    return row && toApi(row, this.config)
+    return row && toApi(row, this.config, this.connections)
   }
 
   private withSchedule(api: Api): Api {
@@ -177,13 +192,18 @@ export class Apis {
     const mode = choice(input, 'mode', '数据模式', MODES)
     const sourced = mode === 'REALTIME' || mode === 'SNAPSHOT'
     const parameters = mode === 'REALTIME' || mode === 'XINGCHEN'
+    const authConnectionId = input.auth === 'EXTERNAL' && input.authConnectionId != null
+      ? integer(input, 'authConnectionId', '身份服务连接', 1, Number.MAX_SAFE_INTEGER) : null
+    const xingchenConnectionId = mode === 'XINGCHEN' && input.xingchenConnectionId != null
+      ? integer(input, 'xingchenConnectionId', '星辰平台连接', 1, Number.MAX_SAFE_INTEGER) : null
     const values = {
       name: text(input, 'name', '接口名称', { max: 100 }),
       code: text(input, 'code', '接口编码', { max: 100, pattern: /^[A-Za-z][A-Za-z0-9_]*$/ }),
       path: text(input, 'path', '接口路径', { max: 300, pattern: /^\/open(\/[A-Za-z0-9_-]+)+$/ }),
       method: choice(input, 'method', '请求方式', ['GET', 'POST'] as const, 'GET'),
       auth: choice(input, 'auth', '访问方式', ['API_KEY', 'PUBLIC', 'EXTERNAL'] as const, 'API_KEY'),
-      externalAuth: input.auth === 'EXTERNAL' ? validateExternalAuth(input.externalAuth) : null,
+      authConnectionId, xingchenConnectionId,
+      externalAuth: input.auth === 'EXTERNAL' ? authConnectionId ? this.connections.auth(authConnectionId) : validateExternalAuth(input.externalAuth) : null,
       userAgents: userAgentRules(input),
       mode,
       datasourceId: sourced ? integer(input, 'datasourceId', '数据源', 1, Number.MAX_SAFE_INTEGER) : null,
@@ -201,19 +221,20 @@ export class Apis {
       enabled: flag(input, 'enabled', '启用状态', false),
     }
     if (mode === 'XINGCHEN' && values.auth !== 'EXTERNAL') throw bad('星辰转发必须使用外部身份验证获取工号')
-    const xingchen = mode === 'XINGCHEN' ? validateXingchen(input.xingchen, values.params, values.externalAuth) : null
+    const xingchenInput = xingchenConnectionId ? { ...(isObject(input.xingchen) ? input.xingchen : {}), ...this.connections.platform(xingchenConnectionId) } : input.xingchen
+    const xingchen = mode === 'XINGCHEN' ? validateXingchen(xingchenInput, values.params, values.externalAuth) : null
     const authBindings = values.externalAuth?.bindings ?? []
-    if (authBindings.length && !parameters) throw bad('身份参数映射只支持实时查询或星辰转发；其他模式可仅验证身份')
+    if (authBindings.length && !parameters && !authConnectionId) throw bad('身份参数映射只支持实时查询或星辰转发；其他模式可仅验证身份')
     if (values.auth === 'EXTERNAL' && values.params.some(param => param.name.startsWith(AUTH_PARAM_PREFIX))) {
       throw bad(`${AUTH_PARAM_PREFIX} 开头的参数由外部身份验证提供，不能声明为请求参数`)
     }
     if (values.datasourceId !== null) this.sources.get(values.datasourceId)
     if (values.sql !== null) {
       const { names: used } = parseSql(values.sql)
-      const declared = [...values.params, ...authBindings].map(param => param.name)
+      const declared = [...values.params, ...(mode === 'REALTIME' ? authBindings : [])].map(param => param.name)
       const undeclared = used.find(name => !declared.includes(name))
       if (undeclared) throw bad(mode === 'SNAPSHOT' ? '定时同步的 SQL 不能包含参数' : `SQL 使用了未定义的参数 :${undeclared}`)
-      const unused = declared.find(name => !used.includes(name))
+      const unused = (authConnectionId ? values.params.map(param => param.name) : declared).find(name => !used.includes(name))
       if (unused) throw bad(`参数 ${unused} 没有在 SQL 中使用`)
     }
     if (mode === 'MANUAL' && !values.fields.length) throw bad('手工维护模式需要至少一个字段')
@@ -240,20 +261,25 @@ export class Apis {
   save(id: number | undefined, input: JsonObject): Api {
     const v = this.validate(input)
     const time = now()
-    const columns = [v.name, v.code, v.path, v.method, v.auth, stringify(v.userAgents), v.mode, v.datasourceId, v.sql,
-      stringify(v.params), stringify(v.fields), stringify(v.filters), stringify(v.keyFields), v.cron, v.cronTimezone, v.allowEmpty ? 1 : 0,
-      v.timeoutSeconds, v.maxRows, v.enabled ? 1 : 0,
-      v.externalAuth ? encrypt(this.config.secretKey, stringify(v.externalAuth)) : null,
-      v.xingchen ? encrypt(this.config.secretKey, stringify(v.xingchen)) : null]
     const saved = transaction(this.db, () => {
+      if (id !== undefined) {
+        if (this.get(id).version !== integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER)) throw conflict('API 配置已被修改，请刷新后再保存')
+      }
+      const authId = v.externalAuth ? v.authConnectionId ?? this.connections.reuse('EXTERNAL_AUTH', v.externalAuth) : null
+      const platformId = v.xingchen ? v.xingchenConnectionId ?? this.connections.reuse('XINGCHEN', { baseUrl: v.xingchen.baseUrl }) : null
+      const application = v.xingchen ? (({ baseUrl: _baseUrl, ...app }) => app)(v.xingchen) : null
+      const columns = [v.name, v.code, v.path, v.method, v.auth, stringify(v.userAgents), v.mode, v.datasourceId, v.sql,
+        stringify(v.params), stringify(v.fields), stringify(v.filters), stringify(v.keyFields), v.cron, v.cronTimezone, v.allowEmpty ? 1 : 0,
+        v.timeoutSeconds, v.maxRows, v.enabled ? 1 : 0, null,
+        application ? encrypt(this.config.secretKey, stringify(application)) : null, authId, platformId]
       if (this.db.prepare('SELECT 1 FROM api WHERE code = ? AND id IS NOT ?').get(v.code, id ?? null)) throw conflict('接口编码已存在')
       if (this.db.prepare('SELECT 1 FROM api WHERE path = ? AND method = ? AND id IS NOT ?').get(v.path, v.method, id ?? null)) {
         throw conflict('相同路径和请求方式的接口已存在')
       }
       if (id === undefined) {
         const result = this.db.prepare(`INSERT INTO api (name, code, path, method, auth, user_agents, mode, datasource_id, sql_text,
-          params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, external_auth, xingchen, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
+          params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, external_auth, xingchen, auth_connection_id, xingchen_connection_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
         return Number(result.lastInsertRowid)
       }
       const version = integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER)
@@ -261,7 +287,7 @@ export class Apis {
       if (current.version !== version) throw conflict('API 配置已被修改，请刷新后再保存')
       this.db.prepare(`UPDATE api SET name = ?, code = ?, path = ?, method = ?, auth = ?, user_agents = ?, mode = ?,
         datasource_id = ?, sql_text = ?, params = ?, fields = ?, filters = ?, key_fields = ?, cron = ?, cron_timezone = ?, allow_empty = ?,
-        timeout_seconds = ?, max_rows = ?, enabled = ?, external_auth = ?, xingchen = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(...columns, time, id)
+        timeout_seconds = ?, max_rows = ?, enabled = ?, external_auth = ?, xingchen = ?, auth_connection_id = ?, xingchen_connection_id = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(...columns, time, id)
       if (current.mode !== v.mode) {
         this.db.prepare('DELETE FROM api_row WHERE api_id = ?').run(id)
         this.db.prepare('UPDATE api SET sync_at = NULL, sync_status = NULL, sync_count = NULL, sync_error = NULL WHERE id = ?').run(id)
@@ -511,6 +537,14 @@ export class Apis {
   resetSort(id: number) {
     if (this.get(id).mode !== 'SNAPSHOT') throw bad('只有定时同步模式的数据可以排序')
     this.db.prepare('UPDATE api_row SET sort = NULL WHERE api_id = ?').run(id)
+  }
+
+  /** A shared identity service can expose many fields; each API requires only what it uses. */
+  identityConfig(api: Pick<Api, 'mode' | 'sql' | 'xingchen' | 'externalAuth'>): ExternalAuthConfig | null {
+    if (!api.externalAuth) return null
+    const names = api.mode === 'REALTIME' ? parseSql(api.sql!).names
+      : api.mode === 'XINGCHEN' ? [api.xingchen?.staffCodeBinding] : []
+    return { ...api.externalAuth, bindings: api.externalAuth.bindings.filter(binding => names.includes(binding.name)) }
   }
 
   // ---- open queries ----

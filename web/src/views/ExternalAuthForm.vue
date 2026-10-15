@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { FIELD_TYPES, type ExternalAuthConfig, type Mode } from '../api'
+import { FIELD_TYPES, FIELD_TYPE_LABELS, type ExternalAuthConfig, type Mode } from '../api'
 import ScalarValue from './ScalarValue.vue'
 
-defineProps<{ mode: Mode }>()
+defineProps<{ mode: Mode; shared?: boolean }>()
 const config = defineModel<ExternalAuthConfig>({ required: true })
 const headers = ref<{ name: string; value: string }[]>([])
 const dynamicHeadersText = ref('{}')
@@ -161,13 +161,13 @@ defineExpose({ value })
       <el-table :data="config.bindings" size="small" empty-text="未配置映射：仅验证访问身份">
         <el-table-column label="响应字段路径"><template #default="{ row }"><el-input v-model="row.path" placeholder="data.staffCode" /></template></el-table-column>
         <el-table-column label="身份参数名"><template #default="{ row }"><el-input v-model="row.name" placeholder="_auth_staff_code" /></template></el-table-column>
-        <el-table-column label="类型" width="125"><template #default="{ row }"><el-select v-model="row.type"><el-option v-for="type in FIELD_TYPES" :key="type" :value="type" /></el-select></template></el-table-column>
+        <el-table-column label="类型" width="125"><template #default="{ row }"><el-select v-model="row.type"><el-option v-for="type in FIELD_TYPES" :key="type" :value="type" :label="FIELD_TYPE_LABELS[type]" /></el-select></template></el-table-column>
         <el-table-column width="65"><template #default="{ $index }"><el-button link type="danger" @click="config.bindings.splice($index, 1)">删除</el-button></template></el-table-column>
       </el-table>
-      <el-button text type="primary" :disabled="!['REALTIME', 'XINGCHEN'].includes(mode)" @click="config.bindings.push({ name: mode === 'XINGCHEN' ? '_auth_staff_code' : '_auth_subject', path: '', type: 'string' })">+ 添加身份字段</el-button>
-      <div class="muted">{{ mode === 'XINGCHEN' ? '在下方星辰配置中选择工号身份参数，系统自动加密。' : mode === 'REALTIME' ? 'SQL 中用 :_auth_subject 等参数引用；每项映射都必须在 SQL 中使用。' : '当前模式仅验证身份，不支持身份映射。' }} 调用者不能覆盖身份参数。</div>
+      <el-button text type="primary" :disabled="!['REALTIME', 'XINGCHEN'].includes(mode)" @click="config.bindings.push({ name: mode === 'XINGCHEN' || shared ? '_auth_staff_code' : '_auth_subject', path: '', type: 'string' })">+ 添加身份字段</el-button>
+      <div class="muted">{{ shared ? '所有引用此连接的 API 可使用这些身份字段；执行时只提取当前 API 需要的字段。' : mode === 'XINGCHEN' ? '在下方星辰配置中选择工号身份参数，系统自动加密。' : mode === 'REALTIME' ? 'SQL 中用 :_auth_subject 等参数引用；每项映射都必须在 SQL 中使用。' : '当前模式仅验证身份，不支持身份映射。' }} 调用者不能覆盖身份参数。</div>
     </div>
   </el-form-item>
-  <p class="muted">配置后可在页底先点「测试身份验证」，确认成功条件和字段路径，再测试完整接口。</p>
+  <p class="muted">在下方测试身份验证，确认成功条件和身份字段路径。测试凭证仅用于本次请求。</p>
   <el-divider />
 </template>

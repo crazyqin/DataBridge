@@ -8,15 +8,20 @@ interface Key { id: number; name: string; prefix: string; createdAt: string; las
 const keys = ref<Key[]>([])
 const name = ref('')
 const created = ref<string>()
+const creating = ref(false)
 
 const load = async () => { keys.value = await request<Key[]>('/admin/keys') }
 onMounted(load)
 
 async function create() {
-  const result = await request<{ key: string }>('/admin/keys', { method: 'POST', body: { name: name.value } })
-  created.value = result.key
-  name.value = ''
-  await load()
+  if (creating.value || !name.value.trim()) return
+  creating.value = true
+  try {
+    const result = await request<{ key: string }>('/admin/keys', { method: 'POST', body: { name: name.value } })
+    created.value = result.key
+    name.value = ''
+    await load()
+  } finally { creating.value = false }
 }
 
 async function copy() {
@@ -33,14 +38,14 @@ async function revoke(key: Key) {
 
 <template>
   <div class="page-head">
-    <div><h2>API Key</h2><p>调用「需要 API Key」的接口时，在请求头 X-API-Key 中携带；建议每个调用方单独创建</p></div>
+    <div><p class="eyebrow">ACCESS KEYS</p><h2>调用密钥</h2><p>调用「需要 API Key」的接口时，在请求头 X-API-Key 中携带；建议每个调用方单独创建</p></div>
   </div>
   <div class="toolbar">
     <el-input v-model="name" placeholder="调用方名称，如 CRM 系统" style="width: 280px" @keyup.enter="create" />
-    <el-button type="primary" :disabled="!name.trim()" @click="create">创建 Key</el-button>
+    <el-button type="primary" :disabled="!name.trim()" :loading="creating" @click="create">创建 Key</el-button>
   </div>
   <el-card shadow="never">
-    <el-table :data="keys" stripe>
+    <el-table :data="keys" empty-text="尚未创建调用密钥；使用外部身份验证的接口无需创建 API Key">
       <el-table-column prop="name" label="名称" min-width="160" />
       <el-table-column label="Key" width="160"><template #default="{ row }"><code>{{ row.prefix }}…</code></template></el-table-column>
       <el-table-column label="创建时间" min-width="165"><template #default="{ row }">{{ formatTime(row.createdAt) }}</template></el-table-column>

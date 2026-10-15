@@ -1,20 +1,29 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { confirm, MODE_LABELS, request, type Api } from '../api'
 import ApiForm from './ApiForm.vue'
 import SyncHistoryDialog from './SyncHistoryDialog.vue'
 
+const props = defineProps<{ initialCreate?: boolean }>()
 const apis = ref<Api[]>([])
-const editing = ref<Api | null>()
+const search = ref('')
+const mode = ref('')
+const state = ref('')
+const loading = ref(false)
+const changing = ref<number>()
+const visible = computed(() => apis.value.filter(api => (!mode.value || api.mode === mode.value) && (!state.value || (state.value === 'enabled') === api.enabled) && `${api.name} ${api.path} ${api.code}`.toLowerCase().includes(search.value.toLowerCase())))
+const editing = ref<Api | null | undefined>(props.initialCreate ? null : undefined)
 const historyApi = ref<Api | null>(null)
 
-const load = async () => { apis.value = await request<Api[]>('/admin/apis') }
+const load = async () => { loading.value = true; try { apis.value = await request<Api[]>('/admin/apis') } finally { loading.value = false } }
 onMounted(load)
 
+async function edit(api: Api) { editing.value = await request<Api>(`/admin/apis/${api.id}`) }
+
 async function toggle(api: Api) {
-  await request(`/admin/apis/${api.id}/${api.enabled ? 'disable' : 'enable'}`, { method: 'POST' })
-  await load()
+  changing.value = api.id
+  try { await request(`/admin/apis/${api.id}/${api.enabled ? 'disable' : 'enable'}`, { method: 'POST' }); await load() } finally { changing.value = undefined }
 }
 
 async function sync(api: Api) {
@@ -42,39 +51,45 @@ async function closeForm() {
   <ApiForm v-if="editing !== undefined" :api="editing" @close="closeForm" />
   <template v-else>
     <div class="page-head">
-      <div><h2>API 管理</h2><p>发布数据接口或转发星辰智能体请求</p></div>
-      <el-button type="primary" @click="editing = null">新增 API</el-button>
+      <div><p class="eyebrow">API MANAGEMENT</p><h2>接口管理</h2><p>查看发布状态，管理业务配置与共享连接。</p></div>
+      <el-button type="primary" @click="editing = null">创建接口</el-button>
     </div>
-    <el-card shadow="never">
-      <el-table :data="apis" stripe>
-        <el-table-column prop="name" label="名称" min-width="130" />
+    <div class="summary-strip"><span><strong>{{ apis.length }}</strong> 全部接口</span><span><i class="status-dot"></i><strong>{{ apis.filter(api => api.enabled).length }}</strong> 已启用</span><span><strong>{{ apis.filter(api => !api.enabled).length }}</strong> 草稿 / 已停用</span></div>
+    <el-card shadow="never" v-loading="loading">
+      <div class="table-toolbar">
+        <el-input v-model="search" clearable placeholder="搜索名称、路径或编码" style="max-width: 320px" />
+        <el-select v-model="mode" clearable placeholder="全部模式" style="width: 165px"><el-option v-for="(label, key) in MODE_LABELS" :key="key" :value="key" :label="label" /></el-select>
+        <el-select v-model="state" clearable placeholder="全部状态" style="width: 140px"><el-option value="enabled" label="已启用" /><el-option value="draft" label="草稿 / 已停用" /></el-select>
+        <el-button text @click="load">刷新</el-button>
+      </div>
+      <el-table :data="visible" empty-text="暂无匹配接口，点击右上角创建接口">
+        <el-table-column label="接口名称" min-width="155"><template #default="{ row }"><strong>{{ row.name }}</strong><div class="muted">{{ row.code }}</div></template></el-table-column>
         <el-table-column label="地址" min-width="200">
-          <template #default="{ row }"><code>{{ row.method }} {{ row.path }}</code></template>
+          <template #default="{ row }"><span class="method-badge">{{ row.method }}</span> <code>{{ row.path }}</code></template>
         </el-table-column>
         <el-table-column label="模式" width="150">
           <template #default="{ row }">{{ MODE_LABELS[row.mode as Api['mode']] }}</template>
         </el-table-column>
-        <el-table-column label="访问" width="130">
-          <template #default="{ row }">
-            <el-tag :type="row.auth === 'PUBLIC' ? 'info' : 'warning'">{{ row.auth === 'PUBLIC' ? '公开' : row.auth === 'EXTERNAL' ? '外部身份验证' : row.auth === 'API_KEY' ? 'API Key' : '需重新配置' }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="80">
-          <template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template>
-        </el-table-column>
+        <el-table-column label="使用连接" min-width="170"><template #default="{ row }">
+          <div>{{ row.authConnectionName || (row.auth === 'PUBLIC' ? '公开访问' : row.auth === 'API_KEY' ? 'API Key' : '未配置') }}</div>
+          <div v-if="row.xingchenConnectionName" class="muted">{{ row.xingchenConnectionName }}</div>
+        </template></el-table-column>
+        <el-table-column label="启用" width="75"><template #default="{ row }"><el-switch :model-value="row.enabled" :loading="changing === row.id" :aria-label="`${row.name} 启用状态`" @change="toggle(row)" /></template></el-table-column>
         <el-table-column label="同步" width="90">
           <template #default="{ row }">
             <el-tooltip v-if="row.syncError" :content="row.syncError"><el-tag type="danger">失败</el-tag></el-tooltip>
             <el-tag v-else-if="row.syncStatus" type="success">成功</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="300">
+        <el-table-column label="操作" width="195">
           <template #default="{ row }">
-            <el-button link type="primary" @click="editing = row">编辑</el-button>
-            <el-button link @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
-            <el-button v-if="row.mode === 'SNAPSHOT'" link @click="sync(row)">立即同步</el-button>
-            <el-button v-if="row.mode === 'SNAPSHOT'" link @click="historyApi = row">同步详情</el-button>
-            <el-button link type="danger" @click="remove(row)">删除</el-button>
+            <el-button link type="primary" @click="edit(row)">编辑</el-button>
+
+            <el-dropdown trigger="click"><el-button text>更多</el-button><template #dropdown><el-dropdown-menu>
+              <el-dropdown-item v-if="row.mode === 'SNAPSHOT'" @click="sync(row)">立即同步</el-dropdown-item>
+              <el-dropdown-item v-if="row.mode === 'SNAPSHOT'" @click="historyApi = row">同步详情</el-dropdown-item>
+              <el-dropdown-item @click="remove(row)">删除接口</el-dropdown-item>
+            </el-dropdown-menu></template></el-dropdown>
           </template>
         </el-table-column>
       </el-table>

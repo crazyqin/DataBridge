@@ -173,14 +173,14 @@ onMounted(loadApis)
 
 <template>
   <div class="page-head">
-    <div><h2>数据维护</h2><p>定时同步的数据可以拖动调整顺序；手工维护的数据可以增删改</p></div>
+    <div><p class="eyebrow">DATA WORKSPACE</p><h2>数据维护</h2><p>定时同步的数据可以拖动调整顺序；手工维护的数据可以增删改</p></div>
     <div>
       <el-button v-if="api?.mode === 'SNAPSHOT'" @click="sync">立即同步</el-button>
       <el-button v-if="api?.mode === 'MANUAL'" type="primary" @click="edit()">新增记录</el-button>
     </div>
   </div>
   <div class="toolbar">
-    <el-select v-model="apiId" placeholder="选择 API" style="width: 320px" @change="selectApi">
+    <el-select v-model="apiId" filterable placeholder="选择要维护的接口" style="width: 320px" @change="selectApi">
       <el-option v-for="item in apis" :key="item.id" :label="`${item.name}（${MODE_LABELS[item.mode]}）`" :value="item.id!" />
     </el-select>
     <el-input v-if="api" v-model="searchDraft" clearable placeholder="搜索所有记录的字段值" style="width: 280px"
