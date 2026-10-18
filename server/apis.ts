@@ -322,6 +322,21 @@ export class Apis {
     return this.get(id)
   }
 
+  /** Copies configuration into a disabled API; save creates fresh metadata and no stored data. */
+  copy(id: number): Api {
+    const original = this.get(id)
+    for (let index = 1; ; index++) {
+      const suffix = index === 1 ? '_copy' : `_copy_${index}`
+      const label = index === 1 ? '（副本）' : `（副本 ${index}）`
+      const code = original.code.slice(0, 100 - suffix.length) + suffix
+      const path = original.path.slice(0, 300 - suffix.length) + suffix
+      const name = original.name.slice(0, 100 - label.length) + label
+      if (this.db.prepare('SELECT 1 FROM api WHERE code = ? OR (path = ? AND method = ?) OR name = ?')
+        .get(code, path, original.method, name)) continue
+      return this.save(undefined, { ...original, name, code, path, enabled: false } as unknown as JsonObject)
+    }
+  }
+
   remove(id: number) {
     this.get(id)
     this.db.prepare('DELETE FROM api WHERE id = ?').run(id)

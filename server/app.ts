@@ -225,6 +225,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   })
   app.post('/admin/apis/:id/enable', c => admin(c, apis.setEnabled(id(c.req.param('id')), true)))
   app.post('/admin/apis/:id/disable', c => admin(c, apis.setEnabled(id(c.req.param('id')), false)))
+  app.post('/admin/apis/:id/copy', c => admin(c, apis.copy(id(c.req.param('id'))), 201))
   app.post('/admin/apis/:id/sync', async c => admin(c, await apis.sync(id(c.req.param('id'))).catch(withDetail)))
   app.get('/admin/apis/:id/sync-history', c => {
     const before = c.req.query('before')

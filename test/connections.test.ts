@@ -98,6 +98,27 @@ test('shared profiles replace duplicated API configuration, encrypt addresses an
   } finally { await f.close() }
 })
 
+test('copying a Xingchen API reuses shared connections and keeps application credentials encrypted', async () => {
+  const f = fixture()
+  try {
+    const { auth, platform } = profiles(f)
+    const original = f.apis.save(undefined, apiDefinition(auth.id, platform.id))
+    const copy = f.apis.copy(original.id)
+    assert.equal(copy.authConnectionId, auth.id)
+    assert.equal(copy.xingchenConnectionId, platform.id)
+    assert.deepEqual(copy.externalAuth, original.externalAuth)
+    assert.deepEqual(copy.xingchen, original.xingchen)
+    assert.deepEqual(copy.params, original.params)
+    assert.equal(copy.enabled, false)
+    assert.equal(f.apis.connections.list().length, 2)
+    const row = f.db.prepare('SELECT external_auth, xingchen FROM api WHERE id = ?').get(copy.id)!
+    assert.equal(row.external_auth, null)
+    assert.doesNotMatch(String(row.xingchen), /synthetic-app-key/)
+    assert.equal((parse(decrypt(f.config.secretKey, String(row.xingchen))) as JsonObject).apiKey, 'synthetic-app-key')
+    assert.deepEqual(f.apis.get(original.id), original)
+  } finally { await f.close() }
+})
+
 test('identity profiles expose reusable fields, but each API extracts only the ones it consumes', async () => {
   const f = fixture()
   try {

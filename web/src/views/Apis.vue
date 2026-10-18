@@ -12,6 +12,7 @@ const mode = ref('')
 const state = ref('')
 const loading = ref(false)
 const changing = ref<number>()
+const copying = ref<number>()
 const visible = computed(() => apis.value.filter(api => (!mode.value || api.mode === mode.value) && (!state.value || (state.value === 'enabled') === api.enabled) && `${api.name} ${api.path} ${api.code}`.toLowerCase().includes(search.value.toLowerCase())))
 const editing = ref<Api | null | undefined>(props.initialCreate ? null : undefined)
 const historyApi = ref<Api | null>(null)
@@ -20,6 +21,15 @@ const load = async () => { loading.value = true; try { apis.value = await reques
 onMounted(load)
 
 async function edit(api: Api) { editing.value = await request<Api>(`/admin/apis/${api.id}`) }
+
+async function copy(api: Api) {
+  if (copying.value !== undefined) return
+  copying.value = api.id
+  try {
+    editing.value = await request<Api>(`/admin/apis/${api.id}/copy`, { method: 'POST' })
+    ElMessage.success('已复制为草稿，可修改配置后启用')
+  } finally { copying.value = undefined }
+}
 
 async function toggle(api: Api) {
   changing.value = api.id
@@ -83,13 +93,15 @@ async function closeForm() {
         </el-table-column>
         <el-table-column label="操作" width="195">
           <template #default="{ row }">
-            <el-button link type="primary" @click="edit(row)">编辑</el-button>
-
-            <el-dropdown trigger="click"><el-button text>更多</el-button><template #dropdown><el-dropdown-menu>
-              <el-dropdown-item v-if="row.mode === 'SNAPSHOT'" @click="sync(row)">立即同步</el-dropdown-item>
-              <el-dropdown-item v-if="row.mode === 'SNAPSHOT'" @click="historyApi = row">同步详情</el-dropdown-item>
-              <el-dropdown-item @click="remove(row)">删除接口</el-dropdown-item>
-            </el-dropdown-menu></template></el-dropdown>
+            <div class="api-row-actions">
+              <el-button link type="primary" :disabled="copying !== undefined" @click="edit(row)">编辑</el-button>
+              <el-dropdown trigger="click" :disabled="copying !== undefined"><el-button link type="primary" :loading="copying === row.id" :disabled="copying !== undefined">更多</el-button><template #dropdown><el-dropdown-menu>
+                <el-dropdown-item v-if="row.mode === 'SNAPSHOT'" @click="sync(row)">立即同步</el-dropdown-item>
+                <el-dropdown-item v-if="row.mode === 'SNAPSHOT'" @click="historyApi = row">同步详情</el-dropdown-item>
+                <el-dropdown-item @click="copy(row)">复制接口</el-dropdown-item>
+                <el-dropdown-item @click="remove(row)">删除接口</el-dropdown-item>
+              </el-dropdown-menu></template></el-dropdown>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -97,3 +109,8 @@ async function closeForm() {
   </template>
   <SyncHistoryDialog v-if="historyApi" :api="historyApi" @close="historyApi = null" />
 </template>
+
+<style scoped>
+.api-row-actions { display: flex; align-items: center; gap: 16px; }
+.api-row-actions .el-dropdown { display: inline-flex; align-items: center; }
+</style>

@@ -22,16 +22,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.2.0 .
+docker build --platform linux/amd64 -t databridge:1.2.1 .
 mkdir -p release
-docker save databridge:1.2.0 | gzip > release/databridge-1.2.0-amd64.tar.gz
+docker save databridge:1.2.1 | gzip > release/databridge-1.2.1-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.2.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.2.1-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.2.0` |
+| Image | `databridge:1.2.1` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -73,6 +73,8 @@ cat /data/initial-admin-password
 - **星辰平台**：集中保存包含 `/v1` 的基础地址；应用 ID、API Key 和 SM2 公钥仍由各接口单独维护。
 
 创建接口时只需选择连接。只有一个可选连接时自动选中；也可在接口表单中打开抽屉新建或编辑连接，已填写的业务配置会保留。接口编辑按「基本设置 → 业务配置 → 测试发布」组织，高级选项折叠，保存时可选择草稿或启用。
+
+接口列表的「更多 → 复制接口」会立即创建停用的副本并打开编辑页，保留业务配置、应用凭据和共享连接，自动生成不冲突的名称、路径及编码。副本不复制手工数据、快照数据或运行历史；确认配置后可启用。
 
 修改共享连接后，所有关联 API 的**后续请求立即生效**，无需逐个保存或重启。连接编辑器显示受影响的接口；被引用的连接不能删除，正在使用的身份字段不能删除或改变类型。连接有独立版本号，过期页面保存返回 409。
 
