@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { formatTime, MODE_LABELS, request, type Api, type CallDetails, type LogWindow } from '../api'
 import ExternalAuthTrace from './ExternalAuthTrace.vue'
+import UiIcon from '../components/UiIcon.vue'
 
 interface LogItem { id: number; requestId: string; at: string; apiId: number | null; mode: string | null; elapsedMs: number; rowCount: number; ok: boolean; error: string | null; hasExternalAuth: boolean; hasRequest: boolean; method: string | null; path: string | null; status: number | null }
 
@@ -77,7 +78,7 @@ onMounted(async () => {
       <el-option label="成功" :value="true" /><el-option label="失败" :value="false" />
     </el-select>
     <el-date-picker v-model="filter.range" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
-    <el-button type="primary" :loading="loading" @click="load()">查询</el-button><el-button @click="filter.apiId = undefined; filter.ok = undefined; filter.range = null; load()">重置</el-button>
+    <el-button type="primary" :loading="loading" @click="load()"><UiIcon v-if="!loading" name="search" />查询</el-button><el-button @click="filter.apiId = undefined; filter.ok = undefined; filter.range = null; load()"><UiIcon name="refresh" />重置</el-button>
   </div>
   <el-card shadow="never" v-loading="loading">
     <el-table :data="items" empty-text="当前条件下没有调用记录">

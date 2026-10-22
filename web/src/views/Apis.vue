@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from 'vue'
 import { confirm, MODE_LABELS, request, type Api } from '../api'
 import ApiForm from './ApiForm.vue'
 import SyncHistoryDialog from './SyncHistoryDialog.vue'
+import UiIcon from '../components/UiIcon.vue'
 
 const props = defineProps<{ initialCreate?: boolean }>()
 const apis = ref<Api[]>([])
@@ -62,15 +63,15 @@ async function closeForm() {
   <template v-else>
     <div class="page-head">
       <div><p class="eyebrow">API MANAGEMENT</p><h2>接口管理</h2><p>查看发布状态，管理业务配置与共享连接。</p></div>
-      <el-button type="primary" @click="editing = null">创建接口</el-button>
+      <el-button type="primary" @click="editing = null"><UiIcon name="plus" />创建接口</el-button>
     </div>
     <div class="summary-strip"><span><strong>{{ apis.length }}</strong> 全部接口</span><span><i class="status-dot"></i><strong>{{ apis.filter(api => api.enabled).length }}</strong> 已启用</span><span><strong>{{ apis.filter(api => !api.enabled).length }}</strong> 草稿 / 已停用</span></div>
     <el-card shadow="never" v-loading="loading">
       <div class="table-toolbar">
-        <el-input v-model="search" clearable placeholder="搜索名称、路径或编码" style="max-width: 320px" />
+        <el-input v-model="search" clearable placeholder="搜索名称、路径或编码" style="max-width: 320px"><template #prefix><UiIcon name="search" /></template></el-input>
         <el-select v-model="mode" clearable placeholder="全部模式" style="width: 165px"><el-option v-for="(label, key) in MODE_LABELS" :key="key" :value="key" :label="label" /></el-select>
         <el-select v-model="state" clearable placeholder="全部状态" style="width: 140px"><el-option value="enabled" label="已启用" /><el-option value="draft" label="草稿 / 已停用" /></el-select>
-        <el-button text @click="load">刷新</el-button>
+        <el-button text @click="load"><UiIcon name="refresh" />刷新</el-button>
       </div>
       <el-table :data="visible" empty-text="暂无匹配接口，点击右上角创建接口">
         <el-table-column label="接口名称" min-width="155"><template #default="{ row }"><strong>{{ row.name }}</strong><div class="muted">{{ row.code }}</div></template></el-table-column>

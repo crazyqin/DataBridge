@@ -9,6 +9,7 @@ import Rows from './views/Rows.vue'
 import Sources from './views/Sources.vue'
 import Connections from './views/Connections.vue'
 import Overview from './views/Overview.vue'
+import UiIcon from './components/UiIcon.vue'
 
 const pages = { overview: '工作台', apis: '接口管理', rows: '数据维护', logs: '调用日志', connections: '连接管理', sources: '数据源', keys: '调用密钥' } as const
 type Page = keyof typeof pages
@@ -67,21 +68,22 @@ onMounted(async () => {
 <template>
   <div v-if="!username && !checking" class="login-wrap">
     <el-card class="login-card">
-      <template #header><div class="brand"><span class="brand-symbol">DB</span> 数桥 <small>DataBridge</small></div></template>
-      <p class="login-intro">统一连接数据与智能体服务</p><el-form @submit.prevent="signIn">
-        <el-form-item><el-input v-model="login.username" placeholder="管理员账号" autocomplete="username" /></el-form-item>
-        <el-form-item><el-input v-model="login.password" type="password" show-password placeholder="密码" autocomplete="current-password" /></el-form-item>
-        <el-button type="primary" native-type="submit" :loading="login.busy" style="width: 100%">登录</el-button>
+      <template #header><div class="brand"><span class="brand-symbol"><UiIcon name="bridge" /></span><div>数桥 <small>DataBridge</small></div></div></template>
+      <h1>欢迎回来</h1><p class="login-intro">统一连接数据与智能体服务</p><el-form @submit.prevent="signIn">
+        <el-form-item><el-input v-model="login.username" aria-label="管理员账号" placeholder="管理员账号" autocomplete="username"><template #prefix><UiIcon name="user" /></template></el-input></el-form-item>
+        <el-form-item><el-input v-model="login.password" aria-label="密码" type="password" show-password placeholder="密码" autocomplete="current-password"><template #prefix><UiIcon name="keys" /></template></el-input></el-form-item>
+        <el-button type="primary" native-type="submit" :loading="login.busy" style="width: 100%">登录<UiIcon name="arrow" class="trailing-icon" /></el-button>
       </el-form>
     </el-card>
+    <span class="login-caption">让数据与服务，轻松相连。</span>
   </div>
 
   <el-container v-else-if="username" class="layout">
-    <el-aside width="224px" class="sidebar">
-      <div class="sidebar-brand"><span class="brand-symbol">DB</span><div>数桥 <small>DataBridge</small></div></div>
+    <el-aside width="208px" class="sidebar">
+      <div class="sidebar-brand"><span class="brand-symbol"><UiIcon name="bridge" /></span><div>数桥 <small>DataBridge</small></div></div>
       <el-menu :default-active="page" @select="navigate($event as Page)">
-        <el-menu-item-group title="工作空间"><el-menu-item v-for="key in (['overview', 'apis', 'rows', 'logs'] as const)" :key="key" :index="key"><span class="nav-dot"></span>{{ pages[key] }}</el-menu-item></el-menu-item-group>
-        <el-menu-item-group title="配置中心"><el-menu-item v-for="key in (['connections', 'sources', 'keys'] as const)" :key="key" :index="key"><span class="nav-dot"></span>{{ pages[key] }}</el-menu-item></el-menu-item-group>
+        <el-menu-item-group title="工作空间"><el-menu-item v-for="key in (['overview', 'apis', 'rows', 'logs'] as const)" :key="key" :index="key"><UiIcon :name="key" />{{ pages[key] }}</el-menu-item></el-menu-item-group>
+        <el-menu-item-group title="配置中心"><el-menu-item v-for="key in (['connections', 'sources', 'keys'] as const)" :key="key" :index="key"><UiIcon :name="key" />{{ pages[key] }}</el-menu-item></el-menu-item-group>
       </el-menu>
       <div class="sidebar-footer"><span class="status-dot"></span> DataBridge <span>v1.2</span></div>
     </el-aside>
@@ -89,9 +91,9 @@ onMounted(async () => {
       <el-header class="topbar">
         <div class="breadcrumb"><span>{{ ['connections', 'sources', 'keys'].includes(page) ? '配置中心' : '工作空间' }}</span><span>/</span><strong>{{ pages[page] }}</strong></div><el-select class="mobile-nav" :model-value="page" aria-label="导航" @update:model-value="navigate($event as Page)"><el-option v-for="(label, key) in pages" :key="key" :value="key" :label="label" /></el-select>
         <div class="topbar-actions">
-          <span>{{ username }}</span>
+          <span class="user-chip"><span class="user-avatar">{{ username.slice(0, 1).toUpperCase() }}</span>{{ username }}</span>
           <el-button text @click="password.open = true">修改密码</el-button>
-          <el-button text @click="signOut">退出</el-button>
+          <el-button text @click="signOut"><UiIcon name="logout" />退出</el-button>
         </div>
       </el-header>
       <el-main>

@@ -2,6 +2,7 @@
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
 import { confirm, request, type Datasource } from '../api'
+import UiIcon from '../components/UiIcon.vue'
 
 type Form = Omit<Datasource, 'id' | 'version'> & { id?: number; version?: number; password: string }
 
@@ -53,10 +54,10 @@ async function remove(source: Datasource) {
 <template>
   <div class="page-head">
     <div><p class="eyebrow">DATABASE CONNECTIONS</p><h2>数据源</h2><p>PostgreSQL 数据源，请使用只授予 SELECT 权限的账号</p></div>
-    <el-button type="primary" @click="edit()">新增数据源</el-button>
+    <el-button type="primary" @click="edit()"><UiIcon name="plus" />新增数据源</el-button>
   </div>
   <el-card shadow="never" v-loading="loading">
-    <div class="table-toolbar"><el-input v-model="search" clearable placeholder="搜索名称或数据库" style="max-width: 320px" /><span class="muted toolbar-count">{{ visible.length }} 个数据源</span></div>
+    <div class="table-toolbar"><el-input v-model="search" clearable placeholder="搜索名称或数据库" style="max-width: 320px"><template #prefix><UiIcon name="search" /></template></el-input><span class="muted toolbar-count">{{ visible.length }} 个数据源</span></div>
     <el-table :data="visible" empty-text="暂无数据源，点击右上角新增">
       <el-table-column prop="name" label="名称" min-width="140" />
       <el-table-column label="地址" min-width="260">

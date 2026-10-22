@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { confirm, CONNECTION_LABELS, formatTime, request, type ConnectionKind, type ConnectionSummary } from '../api'
 import ConnectionEditor from './ConnectionEditor.vue'
+import UiIcon from '../components/UiIcon.vue'
 const connections = ref<ConnectionSummary[]>([])
 const search = ref('')
 const kind = ref<ConnectionKind | ''>('')
@@ -22,12 +23,12 @@ onMounted(load)
 <template>
   <div class="page-head">
     <div><p class="eyebrow">SHARED CONNECTIONS</p><h2>连接管理</h2><p>统一维护身份服务和平台地址，API 选择后即可复用。</p></div>
-    <div class="page-actions"><el-button @click="editor = { kind: 'XINGCHEN' }">新建星辰平台</el-button><el-button type="primary" @click="editor = { kind: 'EXTERNAL_AUTH' }">新建身份服务</el-button></div>
+    <div class="page-actions"><el-button @click="editor = { kind: 'XINGCHEN' }"><UiIcon name="plus" />新建星辰平台</el-button><el-button type="primary" @click="editor = { kind: 'EXTERNAL_AUTH' }"><UiIcon name="plus" />新建身份服务</el-button></div>
   </div>
   <div class="info-strip"><span class="info-mark">i</span><span>已有 API 的配置会自动归入这里。修改连接后关联接口立即生效；正在使用的连接不能删除。</span></div>
   <el-card shadow="never" v-loading="loading">
     <div class="table-toolbar">
-      <el-input v-model="search" clearable placeholder="搜索连接名称" style="max-width: 320px" />
+      <el-input v-model="search" clearable placeholder="搜索连接名称" style="max-width: 320px"><template #prefix><UiIcon name="search" /></template></el-input>
       <el-radio-group v-model="kind"><el-radio-button value="">全部</el-radio-button><el-radio-button value="EXTERNAL_AUTH">身份服务</el-radio-button><el-radio-button value="XINGCHEN">星辰平台</el-radio-button></el-radio-group>
       <span class="muted toolbar-count">{{ visible.length }} 个连接</span>
     </div>

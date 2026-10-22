@@ -36,7 +36,7 @@ const json = (value: unknown) => JSON.stringify(value, null, 2)
 </template>
 
 <style scoped>
-.test-trace { margin-top: 20px; border-top: 1px solid #e7ecf2; padding-top: 4px; }
+.test-trace { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 4px; }
 h3 { font-size: 16px; margin-bottom: 8px; }
 h4 { margin: 16px 0 8px; }
 .el-alert { margin-top: 12px; }
