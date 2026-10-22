@@ -17,7 +17,7 @@ const REDACTED = '[REDACTED]'
 const sensitive = (name: string) => /authorization|cookie|token|secret|password|passwd|credential|digest|signature|(?:api|service)[_-]?key/i.test(name)
 
 /** Redact before truncating or persisting; opaque configured signing values are never logged. */
-export function authRedactor(config: ExternalAuthConfig | null, credential?: string) {
+export function authRedactor(config: ExternalAuthConfig | null, credential?: string, extraSecrets: string[] = []) {
   const secrets = new Set<string>()
   const hiddenHeaders = new Set<string>()
   const visibleValues = new Set(Object.entries(config?.headers ?? {}).filter(([name]) => !sensitive(name)).map(([, value]) => value))
@@ -38,6 +38,7 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
     else if (isObject(value)) for (const [key, part] of Object.entries(value)) collect(part, key)
   }
   secret(credential)
+  for (const value of extraSecrets) secret(value)
   if (config) {
     const token = credential?.startsWith(config.inputPrefix) ? credential.slice(config.inputPrefix.length) : undefined
     secret(token)
@@ -65,6 +66,7 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
     if (sensitive(name) || name === config?.tokenName) return REDACTED
     if (depth > 30) return '[内容过深，已省略]'
     if (typeof value === 'string') return text(value)
+    if ((typeof value === 'number' || JSON.isRawJSON(value)) && secrets.has(JSON.stringify(value))) return REDACTED
     if (Array.isArray(value)) return value.map(part => json(part, name, depth + 1))
     if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, part]) => [key, json(part, key, depth + 1)]))
     return value
@@ -93,7 +95,7 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
       try { safe = JSON.stringify(json(parse(value)), null, 2) } catch { safe = text(value) }
     }
     const bytes = Buffer.from(safe)
-    return { text: bytes.subarray(0, AUTH_PREVIEW_BYTES).toString('utf8'), truncated: bytes.length > AUTH_PREVIEW_BYTES }
+    return { text: new TextDecoder().decode(bytes.subarray(0, AUTH_PREVIEW_BYTES), { stream: true }), truncated: bytes.length > AUTH_PREVIEW_BYTES }
   }
   return { text, json, url, headers, body }
 }

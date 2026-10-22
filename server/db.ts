@@ -111,6 +111,13 @@ const MIGRATIONS = [
   ALTER TABLE api ADD COLUMN xingchen_connection_id INTEGER REFERENCES connection(id) ON DELETE RESTRICT;
   CREATE INDEX api_auth_connection ON api(auth_connection_id);
   CREATE INDEX api_xingchen_connection ON api(xingchen_connection_id);`,
+  `ALTER TABLE request_log ADD COLUMN method TEXT;
+  ALTER TABLE request_log ADD COLUMN path TEXT;
+  ALTER TABLE request_log ADD COLUMN status INTEGER;
+  CREATE TABLE request_detail_log (
+    log_id INTEGER PRIMARY KEY REFERENCES request_log(id) ON DELETE CASCADE,
+    detail TEXT NOT NULL
+  );`,
 ]
 
 export type Db = DatabaseSync

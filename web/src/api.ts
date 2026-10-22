@@ -29,6 +29,14 @@ export interface ExternalAuthTrace {
   checks: { path: string; expected: unknown; actual: unknown; exists: boolean; matched: boolean }[]
 }
 
+export interface CallRequestTrace {
+  method: string; path: string; status: number; responseType: string | null
+  headers: string; headersTruncated: boolean; query: string; queryTruncated: boolean
+  body: string | null; bodyTruncated: boolean; bodyNote: string | null
+}
+
+export interface CallDetails { request: CallRequestTrace | null; externalAuth: ExternalAuthTrace | null }
+
 export class RequestError extends Error {
   readonly externalAuthTrace?: ExternalAuthTrace
 

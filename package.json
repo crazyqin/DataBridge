@@ -1,6 +1,6 @@
 {
   "name": "databridge",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.18" },
@@ -15,7 +15,7 @@
   "dependencies": {
     "@hono/node-server": "^2.1.1",
     "croner": "^10.0.1",
-    "hono": "^4.13.9",
+    "hono": "^4.13.13",
     "pg": "^8.23.0",
     "pg-cursor": "^2.22.0",
     "postgres-array": "^3.0.4",
@@ -28,7 +28,7 @@
     "@vitejs/plugin-vue": "^6.0.9",
     "element-plus": "^2.14.6",
     "typescript": "~5.9.3",
-    "vite": "^7.3.6",
+    "vite": "^7.3.7",
     "vue": "^3.5.43",
     "vue-tsc": "~3.1.8"
   }

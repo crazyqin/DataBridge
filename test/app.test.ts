@@ -309,6 +309,20 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
     assert.deepEqual((await call('POST', '/open/nulls', { s: 'null' })).json.data, [{ n: 1, s: 'null' }])
   })
 
+  test('SQL call logs include query inputs and response status without database results', async () => {
+    const api = await createApi({ name: 'SQL log', code: 'sql_log', path: '/open/sql-log', mode: 'REALTIME',
+      sql: 'SELECT id, name FROM databridge_test.item WHERE id = :id', params: [{ name: 'id', type: 'integer', required: true }] })
+    const result = await open('/open/sql-log?id=1&page=1&pageSize=2')
+    assert.equal(result.status, 200)
+    const list = await call('GET', `/admin/logs?apiId=${api.id}`)
+    const detail = await call('GET', `/admin/logs/${list.json.items[0].id}/details`)
+    assert.equal(detail.status, 200)
+    assert.equal(detail.json.request.status, 200)
+    assert.deepEqual(JSON.parse(detail.json.request.query), { id: '1', page: '1', pageSize: '2' })
+    assert.equal(list.json.items[0].rowCount, 1)
+    assert.doesNotMatch(detail.text, /"name": "one"/)
+  })
+
   test('logs, unknown routes and password change', async () => {
     const from = new Date(Date.now() - 60_000).toISOString().replace('Z', '+00:00')
     const logs = await call('GET', `/admin/logs?from=${encodeURIComponent(from)}&ok=false`)

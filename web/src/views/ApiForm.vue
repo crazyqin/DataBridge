@@ -231,6 +231,7 @@ onMounted(async () => {
           <div class="form-grid" style="margin-top: 24px">
             <el-form-item label="接口名称" required><el-input v-model="form.name" placeholder="如：通讯录查询" /></el-form-item>
             <el-form-item label="接口路径" required><el-input v-model="form.path" placeholder="/open/contacts" @blur="fillCode" /></el-form-item>
+            <el-form-item label="接口编码（英文）"><el-input v-model="form.code" maxlength="100" placeholder="留空按接口路径自动生成" /><div class="field-help">可直接修改，包括复制后的 _copy 后缀。以字母开头，可含字母、数字和下划线；编码不影响调用地址。</div></el-form-item>
           </div>
           <el-form-item label="调用方式"><el-radio-group v-model="form.method"><el-radio-button value="GET">GET · 查询参数</el-radio-button><el-radio-button value="POST">POST · JSON 请求体</el-radio-button></el-radio-group></el-form-item>
         </section>
@@ -286,12 +287,11 @@ onMounted(async () => {
             <el-alert v-if="saved?.syncError" :title="saved.syncError" type="error" :closable="false" />
           </template>
         </section>
-        <el-collapse class="advanced-panel"><el-collapse-item title="高级设置 · 超时、行数、User-Agent 与接口编码" name="advanced">
+        <el-collapse class="advanced-panel"><el-collapse-item title="高级设置 · 超时、行数与 User-Agent" name="advanced">
           <div class="form-grid">
             <el-form-item v-if="sourced || forwarding" label="请求超时（秒）"><el-input-number v-model="form.timeoutSeconds" :min="1" :max="120" /></el-form-item>
             <el-form-item v-if="!forwarding" label="最大行数"><el-input-number v-model="form.maxRows" :min="1" :max="100000" /></el-form-item>
           </div>
-          <el-form-item label="接口编码"><el-input v-model="form.code" placeholder="留空按接口路径生成" /></el-form-item>
           <el-form-item label="允许的 User-Agent"><el-input v-model="lists.userAgents" type="textarea" :rows="2" placeholder="留空不限制；每行一条，末尾 * 表示前缀匹配" /><div class="field-help">客户端可自行设置 User-Agent，此项仅用于兼容性限制。</div></el-form-item>
         </el-collapse-item></el-collapse>
         <div class="page-actions"><el-button @click="activeTab = 'basic'">← 基本设置</el-button><el-button type="primary" @click="activeTab = 'test'">下一步：测试发布 →</el-button></div>

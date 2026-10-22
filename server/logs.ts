@@ -2,6 +2,7 @@ import { transaction, type Db } from './db.ts'
 import { bad, notFound } from './errors.ts'
 import { parse, stringify } from './json.ts'
 import type { ExternalAuthTrace } from './auth-diagnostics.ts'
+import type { CallRequestTrace } from './request-diagnostics.ts'
 
 export interface LogEntry {
   requestId: string
@@ -13,6 +14,7 @@ export interface LogEntry {
   ok: boolean
   error: string | null
   externalAuthTrace?: ExternalAuthTrace
+  requestTrace?: CallRequestTrace
 }
 
 export interface LogQuery { apiId?: string; ok?: string; from?: string; to?: string; before?: string; limit?: string }
@@ -32,11 +34,13 @@ export class Logs {
 
   write(entry: LogEntry) {
     transaction(this.db, () => {
-      const result = this.db.prepare(`INSERT INTO request_log (request_id, at, api_id, mode, elapsed_ms, row_count, ok, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(entry.requestId, entry.at, entry.apiId, entry.mode, Math.round(entry.elapsedMs),
-        entry.rowCount, entry.ok ? 1 : 0, entry.error)
+      const result = this.db.prepare(`INSERT INTO request_log (request_id, at, api_id, mode, elapsed_ms, row_count, ok, error, method, path, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(entry.requestId, entry.at, entry.apiId, entry.mode, Math.round(entry.elapsedMs),
+        entry.rowCount, entry.ok ? 1 : 0, entry.error, entry.requestTrace?.method ?? null, entry.requestTrace?.path ?? null, entry.requestTrace?.status ?? null)
       if (entry.externalAuthTrace) this.db.prepare('INSERT INTO request_auth_log (log_id, detail) VALUES (?, ?)')
         .run(result.lastInsertRowid, stringify(entry.externalAuthTrace))
+      if (entry.requestTrace) this.db.prepare('INSERT INTO request_detail_log (log_id, detail) VALUES (?, ?)')
+        .run(result.lastInsertRowid, stringify(entry.requestTrace))
     })
   }
 
@@ -52,12 +56,15 @@ export class Logs {
     if (args.some(arg => typeof arg === 'number' && !Number.isSafeInteger(arg))) throw bad('查询条件无效')
     const limit = Math.min(Math.max(Number(query.limit) || 100, 1), 500)
     const items = this.db.prepare(`SELECT id, request_id AS requestId, at, api_id AS apiId, mode, elapsed_ms AS elapsedMs,
-      row_count AS rowCount, ok = 1 AS ok, error,
-      EXISTS (SELECT 1 FROM request_auth_log WHERE log_id = request_log.id) AS hasExternalAuth
+      row_count AS rowCount, ok = 1 AS ok, error, method, path, status,
+      EXISTS (SELECT 1 FROM request_auth_log WHERE log_id = request_log.id) AS hasExternalAuth,
+      EXISTS (SELECT 1 FROM request_detail_log WHERE log_id = request_log.id) AS hasRequest
       FROM request_log ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY id DESC LIMIT ?`).all(...args, limit) as (Omit<LogEntry, 'externalAuthTrace' | 'ok'> & { id: number; ok: number; hasExternalAuth: number })[]
+      ORDER BY id DESC LIMIT ?`).all(...args, limit) as (Omit<LogEntry, 'externalAuthTrace' | 'requestTrace' | 'ok'> & {
+        id: number; ok: number; hasExternalAuth: number; hasRequest: number; method: string | null; path: string | null; status: number | null
+      })[]
     return {
-      items: items.map(item => ({ ...item, ok: item.ok === 1, hasExternalAuth: item.hasExternalAuth === 1 })),
+      items: items.map(item => ({ ...item, ok: item.ok === 1, hasExternalAuth: item.hasExternalAuth === 1, hasRequest: item.hasRequest === 1 })),
       nextBefore: items.length === limit ? items[items.length - 1].id : null,
     }
   }
@@ -66,6 +73,15 @@ export class Logs {
     const row = this.db.prepare('SELECT detail FROM request_auth_log WHERE log_id = ?').get(logId) as { detail: string } | undefined
     if (!row) throw notFound('该日志没有外部身份验证详情')
     return parse(row.detail) as unknown as ExternalAuthTrace
+  }
+
+  detail(logId: number) {
+    const row = this.db.prepare(`SELECT d.detail AS request, a.detail AS externalAuth FROM request_log l
+      LEFT JOIN request_detail_log d ON d.log_id = l.id LEFT JOIN request_auth_log a ON a.log_id = l.id WHERE l.id = ?`)
+      .get(logId) as { request: string | null; externalAuth: string | null } | undefined
+    if (!row) throw notFound('调用日志不存在')
+    return { request: row.request ? parse(row.request) as unknown as CallRequestTrace : null,
+      externalAuth: row.externalAuth ? parse(row.externalAuth) as unknown as ExternalAuthTrace : null }
   }
 
   prune(retentionDays: number) {

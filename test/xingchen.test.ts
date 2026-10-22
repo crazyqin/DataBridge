@@ -136,6 +136,10 @@ test('saved and draft forwarding authenticate first, encrypt trusted staff, and 
       assert.ok(!JSON.stringify(outgoing).includes('user-test-token'))
       const logs = JSON.stringify(f.logs.list({}))
       assert.doesNotMatch(logs, /synthetic-platform-key|00042|示例查询|synthetic person/)
+      const detail = f.logs.detail(f.logs.list({}).items[0].id).request!
+      assert.equal(detail.status, 200)
+      assert.match(detail.body!, /示例查询|previous-test/)
+      assert.doesNotMatch(JSON.stringify(detail), /synthetic-platform-key|user-test-token|synthetic person/)
     })
     await t.test('missing credential, rejected identity or missing staff never contacts the platform', async () => {
       const count = received.length
@@ -205,6 +209,10 @@ test('saved and draft forwarding authenticate first, encrypt trusted staff, and 
       assert.equal(await response.text(), upstreamBody)
       assert.equal(f.logs.list({}).items[0].ok, false)
       assert.match(f.logs.list({}).items[0].error!, /流内错误/)
+      const detail = f.logs.detail(f.logs.list({}).items[0].id).request!
+      assert.equal(detail.status, 200)
+      assert.match(detail.responseType!, /text\/event-stream/)
+      assert.equal(JSON.parse(detail.body!).q, 'test')
       upstreamBody = 'data: {"event":"message_end","conversation_id":"next"}\n\n'
       assert.equal(await (await call({ q: 'test' })).text(), upstreamBody)
       assert.equal(f.logs.list({}).items[0].ok, true)

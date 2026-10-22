@@ -19,6 +19,7 @@ import type { Sources } from './sources.ts'
 import { ExternalAuth, TEST_CREDENTIAL_HEADER, validateExternalAuth } from './external-auth.ts'
 import type { ExternalAuthTrace } from './auth-diagnostics.ts'
 import { Xingchen } from './xingchen.ts'
+import { callDiagnostics } from './request-diagnostics.ts'
 
 type Env = { Variables: { requestId: string; user: string; externalAuthTrace: ExternalAuthTrace | undefined } }
 type Ctx = Context<Env>
@@ -271,6 +272,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
 
   app.get('/admin/logs', c => admin(c, logs.list(c.req.query())))
   app.get('/admin/logs/:id/external-auth', c => admin(c, logs.externalAuthDetail(id(c.req.param('id')))))
+  app.get('/admin/logs/:id/details', c => admin(c, logs.detail(id(c.req.param('id')))))
 
   // ---- open API ----
 
@@ -300,15 +302,18 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     const at = now()
     const requestId = c.get('requestId')
     const api = apis.findOpen(c.req.path, c.req.method)
-    if (!api) throw notFound('接口不存在或未启用')
-    if (api.auth === 'EXTERNAL') c.header('Cache-Control', 'private, no-store')
+    if (api?.auth === 'EXTERNAL') c.header('Cache-Control', 'private, no-store')
+    const diagnostic = callDiagnostics(c.req.raw, api)
     let count = 0
     let error: string | null = null
     let externalAuthTrace: ExternalAuthTrace | undefined
     let streamOwnsLog = false
-    const writeLog = (failure: string | null) => logs.write({ requestId, at, apiId: api.id, mode: api.mode,
-      elapsedMs: performance.now() - started, rowCount: count, ok: failure === null, error: failure, externalAuthTrace })
+    const writeLog = (failure: string | null) => logs.write({ requestId, at, apiId: api?.id ?? null, mode: api?.mode ?? null,
+      elapsedMs: performance.now() - started, rowCount: count, ok: failure === null,
+      error: failure === null ? null : diagnostic.error(failure), externalAuthTrace, requestTrace: diagnostic.trace })
     try {
+      if (c.req.method === 'POST') diagnostic.captureBody(await c.req.text())
+      if (!api) throw notFound('接口不存在或未启用')
       if (!['PUBLIC', 'API_KEY', 'EXTERNAL'].includes(api.auth)) throw new HttpError(503, '访问方式无效，请重新配置接口')
       if (api.auth === 'API_KEY' && !auth.checkKey(c.req.header('X-API-Key'))) throw unauthorized('API Key 无效')
       if (!userAgentAllowed(api.userAgents, c.req.header('User-Agent'))) throw forbidden('User-Agent 不被允许')
@@ -318,7 +323,13 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       const input: JsonObject = api.method === 'GET' ? c.req.query() : await readJson(c)
       if (api.mode === 'XINGCHEN') {
         if (api.auth !== 'EXTERNAL') throw new HttpError(503, '星辰转发必须使用外部身份验证')
-        const response = await xingchen.forward(api, input, identity, { signal: c.req.raw.signal, onStreamDone: writeLog })
+        const response = await xingchen.forward(api, input, identity, { signal: c.req.raw.signal, onStreamDone: failure => {
+          diagnostic.trace.status = 200
+          diagnostic.trace.responseType = 'text/event-stream; charset=utf-8'
+          writeLog(failure)
+        } })
+        diagnostic.trace.status = response.status
+        diagnostic.trace.responseType = response.headers.get('content-type')
         streamOwnsLog = response.headers.get('content-type')?.startsWith('text/event-stream') ?? false
         return response
       }
@@ -348,9 +359,13 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
         meta.total_pages = Math.ceil(total / paging.pageSize!)
         meta.has_more = paging.page! * paging.pageSize! < total
       }
+      diagnostic.trace.status = 200
+      diagnostic.trace.responseType = 'application/json; charset=utf-8'
       return send(c, { code: 0, message: 'success', data: rows, meta })
     } catch (e) {
       error = e instanceof HttpError ? e.message : '服务器内部错误'
+      diagnostic.trace.status = e instanceof HttpError ? e.status : 500
+      diagnostic.trace.responseType = 'application/json; charset=utf-8'
       throw e
     } finally {
       if (!streamOwnsLog) writeLog(error)
