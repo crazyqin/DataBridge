@@ -1,34 +1,43 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { formatTime, request, type Api, type ConnectionSummary, type Datasource } from '../api'
-const emit = defineEmits<{ navigate: [page: 'apis' | 'connections' | 'sources' | 'logs']; create: [] }>()
+import { formatTime, request, type Api, type ConnectionSummary, type Datasource, type LogStats, type LogWindow } from '../api'
+const emit = defineEmits<{ navigate: [page: 'apis' | 'connections' | 'sources' | 'logs']; create: []; failures: [window: LogWindow] }>()
 const apis = ref<Api[]>([])
 const connections = ref<ConnectionSummary[]>([])
 const sources = ref<Datasource[]>([])
-const logs = ref<{ id: number; at: string; ok: boolean; apiId: number; elapsedMs: number; error: string | null }[]>([])
+const logs = ref<{ id: number; at: string; ok: boolean; apiId: number | null; elapsedMs: number; error: string | null }[]>([])
+const stats = ref<LogStats>()
+const failureRate = computed(() => stats.value?.total ? `${(stats.value.failed / stats.value.total * 100).toFixed(1)}%` : '—')
 const loading = ref(true)
 const ready = computed(() => connections.value.length + sources.value.length)
 const active = computed(() => apis.value.filter(api => api.enabled).length)
-const apiName = (id: number) => apis.value.find(api => api.id === id)?.name ?? '已删除接口'
-onMounted(async () => {
+const apiName = (id: number | null) => apis.value.find(api => api.id === id)?.name ?? (id === null ? '未匹配接口' : `已删除接口 #${id}`)
+async function load() {
+  loading.value = true
   try {
-    await Promise.all([
+    await Promise.allSettled([
       request<Api[]>('/admin/apis').then(value => { apis.value = value }),
       request<ConnectionSummary[]>('/admin/connections').then(value => { connections.value = value }),
       request<Datasource[]>('/admin/datasources').then(value => { sources.value = value }),
       request<{ items: typeof logs.value }>('/admin/logs?limit=8').then(value => { logs.value = value.items }),
+      request<LogStats>('/admin/logs/stats').then(value => { stats.value = value }).catch(() => { stats.value = undefined }),
     ])
   } finally { loading.value = false }
-})
+}
+onMounted(load)
 </script>
 <template>
   <div v-loading="loading">
-    <div class="page-head"><div><p class="eyebrow">WORKSPACE OVERVIEW</p><h2>工作台</h2><p>连接、接口与运行状态，集中查看。</p></div><el-button type="primary" @click="emit('create')">创建接口</el-button></div>
+    <div class="page-head"><div><p class="eyebrow">WORKSPACE OVERVIEW</p><h2>工作台</h2><p>连接、接口与运行状态，集中查看。</p></div><div><el-button :loading="loading" @click="load">刷新</el-button><el-button type="primary" @click="emit('create')">创建接口</el-button></div></div>
     <div class="metric-grid">
       <button class="metric-card" @click="emit('navigate', 'apis')"><span>已启用接口</span><strong>{{ active }}<small>/ {{ apis.length }}</small></strong><em>查看全部接口 →</em></button>
       <button class="metric-card" @click="emit('navigate', 'connections')"><span>共享连接</span><strong>{{ connections.length }}</strong><em>身份服务与星辰平台 →</em></button>
       <button class="metric-card" @click="emit('navigate', 'sources')"><span>数据库连接</span><strong>{{ sources.length }}</strong><em>管理 PostgreSQL 数据源 →</em></button>
-      <button class="metric-card" @click="emit('navigate', 'logs')"><span>最近 {{ logs.length }} 次调用失败</span><strong :class="{ danger: logs.some(log => !log.ok) }">{{ logs.filter(log => !log.ok).length }}</strong><em>查看调用详情 →</em></button>
+      <button class="metric-card" :disabled="!stats" :title="stats ? `${formatTime(stats.from)} 至 ${formatTime(stats.to)}` : undefined" @click="stats && emit('failures', { from: stats.from, to: stats.to })">
+        <span>近 24 小时失败调用</span><strong :class="{ danger: stats && stats.failed > 0 }">{{ stats?.failed ?? '—' }}</strong>
+        <span v-if="stats" class="call-summary">共 {{ stats.total }} 次调用 · {{ stats.total ? `失败率 ${failureRate}` : '暂无调用' }}</span>
+        <em>{{ stats ? '查看失败日志 →' : '统计暂不可用，请刷新' }}</em>
+      </button>
     </div>
     <section class="editor-section onboarding">
       <div class="section-heading"><h3>{{ apis.length ? '常用操作' : '从一个连接开始' }}</h3><span>连接只配置一次，多个 API 可直接选用</span></div>
@@ -49,3 +58,10 @@ onMounted(async () => {
     </el-card>
   </div>
 </template>
+
+<style scoped>
+.metric-card { display: flex; flex-direction: column; align-items: flex-start; }
+.metric-card em { margin-top: auto; }
+.metric-card .call-summary { font-size: 12px; margin-bottom: 8px; }
+.metric-card:disabled { cursor: default; }
+</style>

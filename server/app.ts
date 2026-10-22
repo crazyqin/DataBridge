@@ -271,6 +271,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   })
 
   app.get('/admin/logs', c => admin(c, logs.list(c.req.query())))
+  app.get('/admin/logs/stats', c => admin(c, logs.stats()))
   app.get('/admin/logs/:id/external-auth', c => admin(c, logs.externalAuthDetail(id(c.req.param('id')))))
   app.get('/admin/logs/:id/details', c => admin(c, logs.detail(id(c.req.param('id')))))
 

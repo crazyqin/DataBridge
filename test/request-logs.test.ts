@@ -25,6 +25,63 @@ function fixture() {
 const definition = { name: 'Request logs', code: 'request_logs', path: '/open/request-logs', mode: 'MANUAL', auth: 'PUBLIC', enabled: true,
   fields: [{ name: 'q', type: 'string' }, { name: 'id', type: 'integer' }, { name: 'amount', type: 'decimal' }], filters: ['q', 'id', 'amount'] }
 
+test('24-hour stats count every recorded outcome across pagination and preserve exact time boundaries', async t => {
+  const end = Date.parse('2026-10-22T04:00:00.123Z'), start = end - 86_400_000
+  t.mock.timers.enable({ apis: ['Date'], now: end })
+  const f = fixture()
+  try {
+    const api = f.apis.save(undefined, definition)
+    let sequence = 0
+    const write = (at: number, ok: boolean, apiId: number | null = null, streaming = false) => {
+      const trace = streaming ? callDiagnostics(new Request('http://localhost/open/stream')).trace : undefined
+      if (trace) { trace.status = 200; trace.responseType = 'text/event-stream' }
+      f.logs.write({ requestId: `stats-${++sequence}`, at: new Date(at).toISOString(), apiId, mode: null,
+        elapsedMs: 1, rowCount: 0, ok, error: ok ? null : 'synthetic failure', requestTrace: trace })
+    }
+    write(start - 1, false)
+    write(end + 1, false)
+    write(start, false)
+    write(end, false)
+    write(start + 1, false, null, true) // SSE may fail after sending HTTP 200.
+    write(start + 1, true, api.id)
+    f.apis.remove(api.id)
+    for (let i = 0; i < 600; i++) write(end - 1, true)
+    assert.ok(f.logs.list({ limit: '8' }).items.every(item => item.ok))
+    assert.equal(f.logs.list({ limit: '1000' }).items.length, 500)
+    const stats = f.logs.stats()
+    assert.deepEqual(stats, { from: new Date(start).toISOString(), to: new Date(end).toISOString(), total: 604, failed: 3 })
+    const failures = f.logs.list({ from: stats.from, to: stats.to, ok: 'false' })
+    assert.equal(failures.items.length, stats.failed)
+    assert.ok(failures.items.every(item => !item.ok))
+  } finally { await f.close() }
+})
+
+test('stats require an administrator and report empty, successful and rejected calls correctly', async () => {
+  const f = fixture()
+  try {
+    assert.equal((await f.app.request('/admin/logs/stats')).status, 401)
+    await f.auth.bootstrap()
+    const token = await f.auth.login('admin', 'synthetic-log-password', 'test')
+    const headers = { Cookie: `databridge_session=${token}` }
+    const read = async () => {
+      const response = await f.app.request('/admin/logs/stats', { headers })
+      assert.equal(response.status, 200)
+      assert.equal(response.headers.get('Cache-Control'), 'no-store')
+      return await response.json()
+    }
+    let stats = await read()
+    assert.equal(stats.total, 0)
+    assert.equal(stats.failed, 0)
+    assert.equal(Date.parse(stats.to) - Date.parse(stats.from), 86_400_000)
+    f.apis.save(undefined, definition)
+    assert.equal((await f.app.request('/open/request-logs')).status, 200)
+    assert.equal((await f.app.request('/open/missing')).status, 404)
+    stats = await read()
+    assert.equal(stats.total, 2)
+    assert.equal(stats.failed, 1)
+  } finally { await f.close() }
+})
+
 test('call previews redact credentials and preserve exact numeric values and repeated query parameters', async () => {
   const f = fixture()
   try {

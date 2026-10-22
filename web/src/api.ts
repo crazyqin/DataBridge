@@ -4,6 +4,8 @@ import { createRequestTrace, type RequestTrace } from './request-trace'
 export type FieldType = 'string' | 'integer' | 'decimal' | 'boolean' | 'date' | 'datetime'
 export interface Field { name: string; type: FieldType; required: boolean }
 export type Mode = 'REALTIME' | 'SNAPSHOT' | 'MANUAL' | 'XINGCHEN'
+export interface LogWindow { from: string; to: string }
+export interface LogStats extends LogWindow { total: number; failed: number }
 export type AuthHeaderValue =
   | { type: 'literal'; value: string }
   | { type: 'timestamp'; unit: 'milliseconds' | 'seconds' }

@@ -22,16 +22,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.2.2 .
+docker build --platform linux/amd64 -t databridge:1.2.3 .
 mkdir -p release
-docker save databridge:1.2.2 | gzip > release/databridge-1.2.2-amd64.tar.gz
+docker save databridge:1.2.3 | gzip > release/databridge-1.2.3-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.2.2-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.2.3-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.2.2` |
+| Image | `databridge:1.2.3` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -65,7 +65,7 @@ cat /data/initial-admin-password
 
 ## 连接管理与工作台
 
-登录后进入「工作台」，查看接口启用数量、共享连接及最近调用。左侧「工作空间」管理接口、数据和日志，「配置中心」维护连接、数据源和调用密钥；列表支持搜索和筛选，手机上可通过顶部菜单切换页面。
+登录后进入「工作台」，查看接口启用数量、共享连接及最近调用。失败统计按服务器当前时间统计近 24 小时全部已记录的调用，不受最近 8 条列表或分页限制，并显示总调用数和失败率；没有调用时显示「暂无调用」。可手动刷新，点击卡片会按同一时间范围筛选失败日志。统计包含鉴权失败、未匹配接口及 SSE 流内失败，以调用结果为准。左侧「工作空间」管理接口、数据和日志，「配置中心」维护连接、数据源和调用密钥；列表支持搜索和筛选，手机上可通过顶部菜单切换页面。
 
 在「连接管理」中创建一次配置：
 
@@ -322,7 +322,9 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001&
 
 ## 调用日志详情
 
-在「调用日志 → 查看详情」中，「请求与结果」展示请求方法和路径、GET 查询参数（包括分页）、POST JSON 请求体、请求 Header、HTTP 状态、耗时及返回行数；「身份验证」展示原有验证服务诊断。调用失败时也记录已经读取的入参，未匹配到启用接口的开放请求记录为 404。请求超过全局 2 MiB 限制时会在进入接口处理前被拒绝，不保存请求详情。
+`GET /admin/logs/stats` 返回近 24 小时的统计起止时间（`from` / `to`）、调用总数（`total`）及失败数（`failed`），仅管理员可访问。
+
+调用日志列表的「请求」列和详情中的请求摘要只显示 GET、POST 等方法。在「调用日志 → 查看详情」中，「请求与结果」展示 GET 查询参数（包括分页）、POST JSON 请求体、请求 Header、HTTP 状态、耗时及返回行数；「身份验证」展示原有验证服务诊断。调用失败时也记录已经读取的入参，未匹配到启用接口的开放请求记录为 404。请求超过全局 2 MiB 限制时会在进入接口处理前被拒绝，不保存请求详情。
 
 凭证、Authorization、Cookie、API Key、密码及签名字段在保存前脱敏，配置的自定义身份凭证及已知凭证值的副本也会隐藏。查询参数、请求体和 Header 的预览各最多 8 KiB，截断时在页面标注；大整数和小数原始精度保持不变。无效 JSON 只记录错误原因，不保留无法可靠脱敏的原文。业务响应正文不保存；星辰 SSE 流内失败时，HTTP 状态仍可能为 200，结果标记为失败。
 

@@ -32,6 +32,15 @@ export class Logs {
     this.db = db
   }
 
+  /** Aggregate all recorded calls in the last 24 hours, independent of list pagination. */
+  stats() {
+    const end = Date.now()
+    const from = new Date(end - 86_400_000).toISOString(), to = new Date(end).toISOString()
+    const counts = this.db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END), 0) AS failed
+      FROM request_log WHERE at >= ? AND at <= ?`).get(from, to) as { total: number; failed: number }
+    return { from, to, ...counts }
+  }
+
   write(entry: LogEntry) {
     transaction(this.db, () => {
       const result = this.db.prepare(`INSERT INTO request_log (request_id, at, api_id, mode, elapsed_ms, row_count, ok, error, method, path, status)

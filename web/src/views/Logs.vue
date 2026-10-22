@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { formatTime, MODE_LABELS, request, type Api, type CallDetails } from '../api'
+import { onMounted, reactive, ref, watch } from 'vue'
+import { formatTime, MODE_LABELS, request, type Api, type CallDetails, type LogWindow } from '../api'
 import ExternalAuthTrace from './ExternalAuthTrace.vue'
 
 interface LogItem { id: number; requestId: string; at: string; apiId: number | null; mode: string | null; elapsedMs: number; rowCount: number; ok: boolean; error: string | null; hasExternalAuth: boolean; hasRequest: boolean; method: string | null; path: string | null; status: number | null }
 
+const props = defineProps<{ failedWindow?: LogWindow }>()
 const apis = ref<Api[]>([])
 const items = ref<LogItem[]>([])
 const loading = ref(false)
@@ -15,7 +16,15 @@ const detailRow = ref<LogItem>()
 const detailTab = ref('request')
 const showDetail = ref(false)
 const loadingDetail = ref<number>()
-const filter = reactive({ apiId: undefined as number | undefined, ok: undefined as boolean | undefined, range: null as [Date, Date] | null })
+const filter = reactive({ apiId: undefined as number | undefined, ok: props.failedWindow ? false : undefined as boolean | undefined,
+  range: props.failedWindow ? [new Date(props.failedWindow.from), new Date(props.failedWindow.to)] as [Date, Date] : null })
+
+watch(() => props.failedWindow, value => {
+  filter.apiId = undefined
+  filter.ok = value ? false : undefined
+  filter.range = value ? [new Date(value.from), new Date(value.to)] : null
+  load()
+})
 
 async function load(more = false) {
   const current = ++sequence
@@ -74,7 +83,7 @@ onMounted(async () => {
     <el-table :data="items" empty-text="当前条件下没有调用记录">
       <el-table-column label="时间" min-width="165"><template #default="{ row }">{{ formatTime(row.at) }}</template></el-table-column>
       <el-table-column label="API" min-width="130"><template #default="{ row }">{{ apiName(row.apiId) }}</template></el-table-column>
-      <el-table-column label="请求" min-width="220"><template #default="{ row }"><template v-if="row.method"><span class="method-badge">{{ row.method }}</span><code>{{ row.path }}</code></template><span v-else class="muted">旧日志未记录</span></template></el-table-column>
+      <el-table-column label="请求" width="90"><template #default="{ row }"><span v-if="row.method" class="method-badge">{{ row.method }}</span><span v-else class="muted" title="旧日志未记录请求方法">—</span></template></el-table-column>
       <el-table-column label="模式" width="145"><template #default="{ row }">{{ MODE_LABELS[row.mode as Api['mode']] || row.mode }}</template></el-table-column>
       <el-table-column prop="elapsedMs" label="耗时 (ms)" width="100" />
       <el-table-column prop="rowCount" label="行数" width="80" />
@@ -98,7 +107,7 @@ onMounted(async () => {
       <el-tabs v-model="detailTab">
         <el-tab-pane label="请求与结果" name="request">
           <template v-if="detail.request">
-            <pre class="result">{{ detail.request.method }} {{ detail.request.path }}</pre>
+            <p><span class="method-badge">{{ detail.request.method }}</span></p>
             <p>HTTP {{ detail.request.status }}<span v-if="detail.request.responseType"> · {{ detail.request.responseType }}</span></p>
             <h4>查询参数（URL）<span v-if="detail.request.queryTruncated" class="muted"> · 内容较长，已截断</span></h4>
             <pre class="result">{{ detail.request.query }}</pre>

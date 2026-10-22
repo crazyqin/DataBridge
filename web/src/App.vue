@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
-import { request } from './api'
+import { request, type LogWindow } from './api'
 import Apis from './views/Apis.vue'
 import Keys from './views/Keys.vue'
 import Logs from './views/Logs.vue'
@@ -17,7 +17,9 @@ const username = ref<string>()
 const checking = ref(true)
 const page = ref<Page>('overview')
 const createApi = ref(false)
-function navigate(next: Page) { createApi.value = false; page.value = next }
+const failedWindow = ref<LogWindow>()
+function navigate(next: Page) { createApi.value = false; failedWindow.value = undefined; page.value = next }
+function showFailures(window: LogWindow) { failedWindow.value = window; page.value = 'logs' }
 function startApi() { createApi.value = true; page.value = 'apis' }
 const login = reactive({ username: '', password: '', busy: false })
 const password = reactive({ open: false, current: '', next: '', confirm: '', busy: false })
@@ -93,12 +95,12 @@ onMounted(async () => {
         </div>
       </el-header>
       <el-main>
-        <Overview v-if="page === 'overview'" @navigate="navigate" @create="startApi" />
+        <Overview v-if="page === 'overview'" @navigate="navigate" @create="startApi" @failures="showFailures" />
         <Connections v-else-if="page === 'connections'" />
         <Sources v-else-if="page === 'sources'" />
         <Apis v-else-if="page === 'apis'" :initial-create="createApi" />
         <Rows v-else-if="page === 'rows'" />
-        <Logs v-else-if="page === 'logs'" />
+        <Logs v-else-if="page === 'logs'" :failed-window="failedWindow" />
         <Keys v-else />
       </el-main>
     </el-container>
