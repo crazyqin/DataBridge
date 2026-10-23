@@ -93,9 +93,13 @@ onMounted(async () => {
       <el-table-column prop="elapsedMs" label="耗时 (ms)" width="100" />
       <el-table-column prop="rowCount" label="行数" width="80" />
       <el-table-column label="结果" width="80">
-        <template #default="{ row }"><el-tag :type="row.ok ? 'success' : 'danger'">{{ row.ok ? '成功' : '失败' }}</el-tag><div v-if="row.status" class="muted">HTTP {{ row.status }}</div></template>
+        <template #default="{ row }">
+          <button v-if="!row.ok" class="log-failure" type="button" aria-label="查看失败详情"
+                  :title="row.error || '未记录具体错误，点击查看详情'" @click="inspect(row)"><el-tag type="danger">失败</el-tag></button>
+          <el-tag v-else type="success">成功</el-tag>
+          <div v-if="row.status" class="muted">HTTP {{ row.status }}</div>
+        </template>
       </el-table-column>
-      <el-table-column prop="error" label="错误" min-width="180" show-overflow-tooltip />
       <el-table-column prop="requestId" label="Request ID" min-width="150" show-overflow-tooltip />
       <el-table-column label="调用详情" width="110" fixed="right"><template #default="{ row }">
         <el-button link type="primary" :loading="loadingDetail === row.id" @click="inspect(row)">查看详情</el-button>
@@ -181,6 +185,7 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.log-failure { border: 0; padding: 0; background: transparent; vertical-align: middle; cursor: pointer; }
 .call-detail pre.result { white-space: pre-wrap; overflow-wrap: anywhere; }
 .call-detail h4 { margin-bottom: 8px; }
 :global(.call-detail .el-dialog__body) { max-height: 72vh; overflow-y: auto; }

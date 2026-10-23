@@ -8,6 +8,7 @@ import ConnectionEditor from './ConnectionEditor.vue'
 import ExternalAuthTrace from './ExternalAuthTrace.vue'
 import TestRequestTrace from './TestRequestTrace.vue'
 import type { RequestTrace } from '../request-trace'
+import { completeTestParams } from '../test-params'
 import SyncHistoryDialog from './SyncHistoryDialog.vue'
 
 const props = defineProps<{ api: Api | null }>()
@@ -31,7 +32,6 @@ const lists = ref(listsOf(form.value))
 const sources = ref<Datasource[]>([])
 const saving = ref(false)
 const testing = ref(false)
-const testingAuth = ref(false)
 const authTrace = ref<AuthTrace>()
 const requestTrace = ref<RequestTrace>()
 const testError = ref('')
@@ -69,6 +69,23 @@ const result = ref<{ elapsedMs: number; count?: number; rows?: unknown[]; respon
 const sourced = computed(() => ['REALTIME', 'SNAPSHOT'].includes(form.value.mode))
 const forwarding = computed(() => form.value.mode === 'XINGCHEN')
 const parameterized = computed(() => form.value.mode === 'REALTIME' || forwarding.value)
+let generatedTestParams = '{}'
+
+function fillTestParams(manual = false) {
+  if (!parameterized.value) return
+  const template = completeTestParams(form.value.params)!
+  const current = testParams.value === generatedTestParams ? '{}' : testParams.value
+  const completed = completeTestParams(form.value.params, current)
+  if (completed === null) {
+    if (manual) ElMessage.warning('请先将测试参数改为有效的 JSON 对象，当前内容已保留')
+    return
+  }
+  testParams.value = completed
+  generatedTestParams = template
+}
+watch(activeTab, tab => { if (tab === 'test') fillTestParams() })
+watch(() => form.value.params, () => { if (activeTab.value === 'test') fillTestParams() }, { deep: true })
+
 watch(() => form.value.mode, mode => {
   if (mode !== 'XINGCHEN') return
   form.value.auth = 'EXTERNAL'
@@ -159,8 +176,9 @@ async function test() {
   requestTrace.value = undefined
   testError.value = ''
   let api: Api
+  const params = parameterized.value ? testParams.value.trim() || '{}' : '{}'
   try {
-    JSON.parse(testParams.value || '{}')
+    JSON.parse(params)
     api = payload()
   } catch (error) {
     testError.value = error instanceof Error ? error.message : '测试配置无效'
@@ -170,7 +188,7 @@ async function test() {
   try {
     result.value = await request('/admin/apis/test', {
       method: 'POST',
-      rawBody: `{"api":${JSON.stringify(api)},"params":${testParams.value.trim() || '{}'}}`,
+      rawBody: `{"api":${JSON.stringify(api)},"params":${params}}`,
       headers: api.auth === 'EXTERNAL' ? { 'X-DataBridge-Test-Credential': (selectedAuth.value?.inputPrefix ?? '') + testCredential.value } : undefined,
       onTrace: trace => { requestTrace.value = trace },
     })
@@ -180,30 +198,6 @@ async function test() {
     else ElMessage.error(error instanceof Error ? error.message : '测试请求失败')
   } finally {
     testing.value = false
-    testCredential.value = ''
-  }
-}
-
-async function testAuth() {
-  result.value = undefined
-  authTrace.value = undefined
-  requestTrace.value = undefined
-  testError.value = ''
-  if (!form.value.authConnectionId) return ElMessage.warning('请先选择身份服务连接')
-  testingAuth.value = true
-  try {
-    const response = await request<{ externalAuthTrace: AuthTrace }>('/admin/external-auth/test', {
-      method: 'POST', body: { connectionId: form.value.authConnectionId },
-      headers: { 'X-DataBridge-Test-Credential': (selectedAuth.value?.inputPrefix ?? '') + testCredential.value },
-      onTrace: trace => { requestTrace.value = trace },
-    })
-    authTrace.value = response.externalAuthTrace
-  } catch (error) {
-    if (error instanceof RequestError) { authTrace.value = error.externalAuthTrace; testError.value = error.message; diagnostics.value = ['auth', 'request'] }
-    else ElMessage.error(error instanceof Error ? error.message : '测试请求失败')
-  } finally {
-    testingAuth.value = false
-    testCredential.value = ''
   }
 }
 
@@ -298,13 +292,15 @@ onMounted(async () => {
       </el-tab-pane>
       <el-tab-pane label="3  测试发布" name="test">
         <section class="editor-section">
-          <div class="section-heading"><h3>测试当前配置</h3><span>无需先保存{{ forwarding ? ' · 星辰测试使用 blocking 模式' : '' }}</span></div>
+          <div class="section-heading"><h3>{{ form.mode === 'MANUAL' ? '发布前确认' : '测试当前配置' }}</h3><span v-if="sourced || forwarding">无需先保存{{ forwarding ? ' · 星辰测试使用 blocking 模式' : '' }}</span></div>
           <div class="publish-preview"><span class="method-badge">{{ form.method }}</span><code>{{ form.path }}</code><el-tag type="info">{{ MODE_LABELS[form.mode] }}</el-tag></div>
-          <el-form-item v-if="form.auth === 'EXTERNAL'" label="本次测试的身份凭证"><el-input v-model="testCredential" type="password" autocomplete="off" placeholder="不含前缀，测试完成后自动清空" /><div class="field-help">所选身份服务：{{ selectedAuth?.name || '尚未选择' }}</div></el-form-item>
-          <el-form-item v-if="parameterized" label="测试参数（JSON）"><el-input v-model="testParams" type="textarea" :rows="3" class="mono" :placeholder="forwarding ? '{&quot;q&quot;: &quot;示例查询&quot;}' : '{&quot;id&quot;: &quot;10001&quot;}'" /></el-form-item>
-          <div class="toolbar">
-            <el-button v-if="sourced || forwarding" type="primary" :loading="testing" :disabled="testingAuth" @click="test">{{ forwarding ? '测试星辰转发' : '执行 SQL 测试' }}</el-button>
-            <el-button v-if="form.auth === 'EXTERNAL'" :loading="testingAuth" :disabled="testing" @click="testAuth">测试身份服务</el-button>
+          <el-form-item v-if="form.auth === 'EXTERNAL' && (sourced || forwarding)" label="本次测试的身份凭证"><el-input v-model="testCredential" type="password" clearable autocomplete="off" placeholder="输入身份凭证（不含前缀）" /><div class="field-help">所选身份服务：{{ selectedAuth?.name || '尚未选择' }} · 执行测试时会先验证身份。凭证在当前编辑页保留，可反复测试。</div></el-form-item>
+          <el-form-item v-if="parameterized" label="测试参数（JSON）">
+            <el-input v-model="testParams" type="textarea" :autosize="{ minRows: 4, maxRows: 14 }" class="mono" placeholder="{}" />
+            <div class="field-help">已按业务参数生成模板，修改值即可；补齐模板会保留已填写内容。<el-button link type="primary" @click="fillTestParams(true)">补齐参数模板</el-button></div>
+          </el-form-item>
+          <div v-if="sourced || forwarding" class="toolbar">
+            <el-button type="primary" :loading="testing" @click="test">{{ forwarding ? '测试星辰转发' : '执行 SQL 测试' }}</el-button>
             <span v-if="result" class="result-status">{{ result.count === undefined ? '转发完成' : `返回 ${result.count} 行` }} · {{ result.elapsedMs }} ms</span>
           </div>
           <el-alert v-if="testError" :title="testError" type="error" :closable="false" show-icon />
