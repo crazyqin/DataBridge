@@ -21,7 +21,8 @@ import type { ExternalAuthTrace } from './auth-diagnostics.ts'
 import { Xingchen } from './xingchen.ts'
 import { callDiagnostics } from './request-diagnostics.ts'
 
-type Env = { Variables: { requestId: string; user: string; externalAuthTrace: ExternalAuthTrace | undefined } }
+type Env = { Variables: { requestId: string; user: string; externalAuthTrace: ExternalAuthTrace | undefined;
+  callDiagnostic: ReturnType<typeof callDiagnostics> | undefined; completeCall: ((response: Response) => void) | undefined } }
 type Ctx = Context<Env>
 
 export interface Services { config: Config; db: Db; auth: Auth; sources: Sources; apis: Apis; logs: Logs }
@@ -30,6 +31,7 @@ const COOKIE = 'databridge_session'
 
 function send(c: Ctx, data: unknown, status = 200, forBrowser = false) {
   const text = forBrowser ? stringifyForBrowser(data) : stringify(data)
+  c.get('callDiagnostic')?.captureResponseBody(text)
   return c.body(text, status as 200, { 'Content-Type': 'application/json; charset=utf-8' })
 }
 
@@ -82,6 +84,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     if (headers.get('Content-Type')?.startsWith('text/html')) {
       headers.set('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'")
     }
+    c.get('completeCall')?.(c.res)
   })
 
   app.use(bodyLimit({ maxSize: 2 * 1024 * 1024, onError: c => send(c, { code: 41301, message: '请求体过大', request_id: c.get('requestId') }, 413) }))
@@ -304,37 +307,59 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     const requestId = c.get('requestId')
     const api = apis.findOpen(c.req.path, c.req.method)
     if (api?.auth === 'EXTERNAL') c.header('Cache-Control', 'private, no-store')
-    const diagnostic = callDiagnostics(c.req.raw, api)
+    const diagnostic = callDiagnostics(c.req.raw, api, clientAddress(c))
+    c.set('callDiagnostic', diagnostic)
     let count = 0
     let error: string | null = null
     let externalAuthTrace: ExternalAuthTrace | undefined
     let streamOwnsLog = false
-    const writeLog = (failure: string | null) => logs.write({ requestId, at, apiId: api?.id ?? null, mode: api?.mode ?? null,
-      elapsedMs: performance.now() - started, rowCount: count, ok: failure === null,
-      error: failure === null ? null : diagnostic.error(failure), externalAuthTrace, requestTrace: diagnostic.trace })
+    let responseReady = false, logged = false
+    let streamOutcome: { failure: string | null } | undefined
+    const writeLog = (failure: string | null) => {
+      if (logged) return
+      diagnostic.finish(failure !== null)
+      logs.write({ requestId, at, apiId: api?.id ?? null, mode: api?.mode ?? null,
+        elapsedMs: performance.now() - started, rowCount: count, ok: failure === null,
+        error: failure === null ? null : diagnostic.error(failure), externalAuthTrace, requestTrace: diagnostic.trace })
+      logged = true
+    }
+    // Persist final response headers and the actual error response produced by onError.
+    // A stream can finish before response middleware runs; either ordering must log exactly once.
+    c.set('completeCall', response => {
+      diagnostic.captureResponse(response)
+      responseReady = true
+      if (!streamOwnsLog) writeLog(error)
+      else if (streamOutcome) writeLog(streamOutcome.failure)
+    })
     try {
-      if (c.req.method === 'POST') diagnostic.captureBody(await c.req.text())
+      if (!['GET', 'HEAD'].includes(c.req.method)) diagnostic.captureBody(await c.req.text())
+      diagnostic.stage('routing')
       if (!api) throw notFound('接口不存在或未启用')
+      diagnostic.stage('access')
       if (!['PUBLIC', 'API_KEY', 'EXTERNAL'].includes(api.auth)) throw new HttpError(503, '访问方式无效，请重新配置接口')
       if (api.auth === 'API_KEY' && !auth.checkKey(c.req.header('X-API-Key'))) throw unauthorized('API Key 无效')
       if (!userAgentAllowed(api.userAgents, c.req.header('User-Agent'))) throw forbidden('User-Agent 不被允许')
+      if (api.auth === 'EXTERNAL') diagnostic.stage('identity')
       const identity = api.auth === 'EXTERNAL'
         ? await externalAuth.verify(apis.identityConfig(api), api.externalAuth ? c.req.header(api.externalAuth.inputHeader) : undefined,
           trace => { externalAuthTrace = trace }) : undefined
+      diagnostic.stage(api.mode === 'XINGCHEN' ? 'forward' : 'query')
       const input: JsonObject = api.method === 'GET' ? c.req.query() : await readJson(c)
       if (api.mode === 'XINGCHEN') {
+        diagnostic.parameters(input)
         if (api.auth !== 'EXTERNAL') throw new HttpError(503, '星辰转发必须使用外部身份验证')
-        const response = await xingchen.forward(api, input, identity, { signal: c.req.raw.signal, onStreamDone: failure => {
-          diagnostic.trace.status = 200
-          diagnostic.trace.responseType = 'text/event-stream; charset=utf-8'
-          writeLog(failure)
+        const response = await xingchen.forward(api, input, identity, { signal: c.req.raw.signal,
+          onResponseBody: diagnostic.captureResponseBody, onStreamDone: (failure, summary) => {
+            diagnostic.captureStream(summary)
+            streamOutcome = { failure }
+            if (responseReady && streamOwnsLog) writeLog(failure)
         } })
-        diagnostic.trace.status = response.status
-        diagnostic.trace.responseType = response.headers.get('content-type')
         streamOwnsLog = response.headers.get('content-type')?.startsWith('text/event-stream') ?? false
+        diagnostic.stage(streamOwnsLog ? 'stream' : 'response')
         return response
       }
       const paging = pagination(api, input)
+      diagnostic.parameters(paging.input, paging.page, paging.pageSize)
       if (api.mode === 'REALTIME' && activeQueries >= config.maxConcurrentQueries) throw new HttpError(503, '服务繁忙，请稍后再试')
       activeQueries++
       let rows
@@ -360,16 +385,11 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
         meta.total_pages = Math.ceil(total / paging.pageSize!)
         meta.has_more = paging.page! * paging.pageSize! < total
       }
-      diagnostic.trace.status = 200
-      diagnostic.trace.responseType = 'application/json; charset=utf-8'
+      diagnostic.stage('response')
       return send(c, { code: 0, message: 'success', data: rows, meta })
     } catch (e) {
       error = e instanceof HttpError ? e.message : '服务器内部错误'
-      diagnostic.trace.status = e instanceof HttpError ? e.status : 500
-      diagnostic.trace.responseType = 'application/json; charset=utf-8'
       throw e
-    } finally {
-      if (!streamOwnsLog) writeLog(error)
     }
   })
 

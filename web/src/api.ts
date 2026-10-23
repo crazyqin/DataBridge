@@ -31,10 +31,19 @@ export interface ExternalAuthTrace {
   checks: { path: string; expected: unknown; actual: unknown; exists: boolean; matched: boolean }[]
 }
 
+export type CallStage = 'request' | 'routing' | 'access' | 'identity' | 'query' | 'forward' | 'response' | 'stream'
 export interface CallRequestTrace {
   method: string; path: string; status: number; responseType: string | null
   headers: string; headersTruncated: boolean; query: string; queryTruncated: boolean
   body: string | null; bodyTruncated: boolean; bodyNote: string | null
+  url?: string; urlTruncated?: boolean; clientAddress?: string
+  api?: Pick<Api, 'id' | 'name' | 'code' | 'path' | 'method' | 'mode' | 'auth' | 'version' | 'datasourceId' |
+    'authConnectionId' | 'authConnectionName' | 'xingchenConnectionId' | 'xingchenConnectionName' | 'timeoutSeconds' | 'maxRows' | 'syncAt'> | null
+  parameters?: string; parametersTruncated?: boolean; pagination?: { page: number; pageSize: number } | null
+  steps?: { stage: CallStage; elapsedMs: number; ok: boolean }[]; errorStage?: CallStage | null
+  statusText?: string; responseHeaders?: string; responseHeadersTruncated?: boolean
+  responseBody?: string | null; responseBodyTruncated?: boolean; responseBodyNote?: string | null; responseBytes?: number
+  stream?: { bytes: number; events: number; lastEvent: string | null }
 }
 
 export interface CallDetails { request: CallRequestTrace | null; externalAuth: ExternalAuthTrace | null }

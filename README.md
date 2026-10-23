@@ -22,16 +22,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.2.5 .
+docker build --platform linux/amd64 -t databridge:1.2.6 .
 mkdir -p release
-docker save databridge:1.2.5 | gzip > release/databridge-1.2.5-amd64.tar.gz
+docker save databridge:1.2.6 | gzip > release/databridge-1.2.6-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.2.5-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.2.6-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.2.5` |
+| Image | `databridge:1.2.6` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -133,7 +133,7 @@ curl -X POST 'http://localhost:8080/open/contacts' \
 
 平台请求默认超时 60 秒，可设为 1～120 秒，覆盖整个响应读取过程；单次响应最多 8 MiB。平台 HTTP 错误、重定向或异常响应返回 502，连接／读取超时返回 504，转发并发耗尽返回 503。SSE 已开始后若传输失败，追加 `event: "error"`、`code: "databridge_forward_error"` 的 data 事件。断开连接会取消上游请求；不跟随重定向，不关闭 HTTPS 证书校验，不转发调用者的其他请求头。
 
-星辰配置整体加密存储。平台错误正文、凭据和地址不写入转发错误日志；测试诊断中的平台连接配置脱敏。成功结果只返回给调用者，调用日志不保存智能体回复；身份服务诊断沿用管理员可查看的现有机制。内网联调需在能访问平台的部署环境进行，本项目以本地模拟服务和独立 SM2 解密验证协议。
+星辰配置整体加密存储。平台错误正文、凭据和地址不写入转发错误日志；测试诊断中的平台连接配置脱敏。成功的 JSON 结果在调用详情中保留脱敏后的限长预览；SSE 只记录接收字节数、已识别事件和结束状态。身份服务诊断沿用管理员可查看的现有机制。内网联调需在能访问平台的部署环境进行，本项目以本地模拟服务和独立 SM2 解密验证协议。
 
 ## 外部身份验证
 
@@ -317,18 +317,18 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001&
 - 管理端使用 `SameSite=Strict` 的会话 Cookie，写操作还要求带 `X-Requested-With` 请求头，用来防御 CSRF。
 - API Key 只保存 SHA-256 哈希，页面上只显示前缀。
 - User-Agent 限制只能用于客户端兼容性控制，不能代替 API Key。
-- 调用日志记录请求方法、路径、HTTP 状态、耗时、行数和错误摘要；详情保存脱敏后的查询参数、JSON 请求体、请求 Header 和外部身份验证记录，仅管理员可查看。数据库返回的错误详情不会出现在开放接口的响应或日志中，只在管理端的测试和同步状态里显示。
+- 调用日志记录请求方法、路径、HTTP 状态、耗时、行数和错误摘要；详情保存调用时的接口信息、完整请求地址、来源 IP、脱敏后的参数、请求与响应 Header、JSON 响应预览、处理阶段和外部身份验证记录，仅管理员可查看。数据库返回的错误详情不会出现在开放接口的响应或日志中，只在管理端的测试和同步状态里显示。
 - 生产环境请通过 HTTPS 反向代理访问，并设置 `TRUST_PROXY=true`。
 
 ## 调用日志详情
 
 `GET /admin/logs/stats` 返回近 24 小时的统计起止时间（`from` / `to`）、调用总数（`total`）及失败数（`failed`），仅管理员可访问。
 
-调用日志列表的「请求」列和详情中的请求摘要只显示 GET、POST 等方法。在「调用日志 → 查看详情」中，「请求与结果」展示 GET 查询参数（包括分页）、POST JSON 请求体、请求 Header、HTTP 状态、耗时及返回行数；「身份验证」展示原有验证服务诊断。调用失败时也记录已经读取的入参，未匹配到启用接口的开放请求记录为 404。请求超过全局 2 MiB 限制时会在进入接口处理前被拒绝，不保存请求详情。
+调用日志列表的「请求」列只显示 GET、POST 等方法。「查看详情」保留服务端收到的完整 URL（协议、主机、端口、路径和查询字符串），并展示 Request ID、调用时间、来源 IP、调用时的接口名称、编码、版本、访问方式、数据模式和处理阶段耗时。「请求与结果」展示 URL 查询参数、JSON 请求体、业务参数与分页、请求与响应 Header、HTTP 状态、响应字节数、JSON 响应正文预览及返回行数；「身份验证」展示原有验证服务诊断。接口被修改或删除后，已记录的接口快照仍然保留。来源 IP 沿用 `TRUST_PROXY` 配置，未信任代理时不采用转发头中的地址。调用失败时也记录已经读取的入参，未匹配到启用接口的开放请求记录为 404。请求超过全局 2 MiB 限制时会在进入接口处理前被拒绝，不保存请求详情。
 
-凭证、Authorization、Cookie、API Key、密码及签名字段在保存前脱敏，配置的自定义身份凭证及已知凭证值的副本也会隐藏。查询参数、请求体和 Header 的预览各最多 8 KiB，截断时在页面标注；大整数和小数原始精度保持不变。无效 JSON 只记录错误原因，不保留无法可靠脱敏的原文。业务响应正文不保存；星辰 SSE 流内失败时，HTTP 状态仍可能为 200，结果标记为失败。
+凭证、Authorization、Cookie、API Key、密码及签名字段在保存前脱敏，配置的自定义身份凭证及已知凭证值的副本也会隐藏。完整 URL、查询参数、请求体、请求与响应 Header、业务参数和响应正文的预览各最多 8 KiB，截断时在页面标注；大整数和小数原始精度保持不变。无效 JSON 只记录错误原因，不保留无法可靠脱敏的原文。成功和失败的 JSON 响应均保留脱敏预览，不改变发给调用者的实际响应；SSE 不缓存完整正文，仅记录接收字节数、已识别事件、最后事件与结束状态，流内失败时 HTTP 状态仍可能为 200，结果标记为失败。响应 Header 包括最终生成的 `X-Request-ID`。
 
-管理端通过 `GET /admin/logs/:id/details` 按需读取请求与身份验证详情。详情跟随父日志按 `LOG_RETENTION_DAYS` 清理；删除接口后，在保留期内仍可查看对应调用。旧版本日志继续保留，未记录的请求内容显示为不可用，升级后的新调用开始记录。
+管理端通过 `GET /admin/logs/:id/details` 按需读取请求与身份验证详情。详情跟随父日志按 `LOG_RETENTION_DAYS` 清理；删除接口后，在保留期内仍可查看对应调用。旧版本日志继续保留，可查看已有摘要、请求路径及身份验证详情；未记录的主机、响应正文、处理阶段等信息明确标注缺失，升级后的新调用开始记录。
 
 ## 备份与恢复
 

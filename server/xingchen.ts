@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { sm2 } from 'sm-crypto-v2'
+import type { CallStreamSummary } from './request-diagnostics.ts'
 import { readAuthResponse } from './auth-diagnostics.ts'
 import { bad, forbidden, HttpError } from './errors.ts'
 import type { ExternalAuthConfig, QueryIdentity } from './external-auth.ts'
@@ -95,7 +96,8 @@ export class Xingchen {
   constructor(maxConcurrent: number) { this.maxConcurrent = maxConcurrent }
 
   async forward(api: ForwardApi, input: JsonObject, identity: QueryIdentity | undefined,
-    options: { signal?: AbortSignal; blocking?: boolean; onStreamDone?: (error: string | null) => void } = {}): Promise<Response> {
+    options: { signal?: AbortSignal; blocking?: boolean; onResponseBody?: (body: string) => void;
+      onStreamDone?: (error: string | null, summary: CallStreamSummary) => void } = {}): Promise<Response> {
     const config = api.xingchen
     if (!config) throw new HttpError(503, '尚未配置星辰转发')
     const staff = identity && Object.hasOwn(identity, config.staffCodeBinding) ? identity[config.staffCodeBinding] : undefined
@@ -137,13 +139,16 @@ export class Xingchen {
         let result: Json
         try { result = parse(content.text) } catch { throw new HttpError(502, '星辰平台返回无效 JSON') }
         if (!isObject(result) || result.event === 'error' || typeof result.answer !== 'string') throw new HttpError(502, '星辰智能体执行失败或响应缺少 answer')
-        return new Response(stringify(result), { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store' } })
+        const body = stringify(result)
+        options.onResponseBody?.(body)
+        return new Response(body, { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store' } })
       }
       if (contentType !== 'text/event-stream' || !response.body) throw new HttpError(502, '星辰平台未返回 SSE 流')
       const reader = response.body.getReader()
       let size = 0
       let streamError: string | null = null
-      // Observe only event type for logging; never retain or log personal response data.
+      let events = 0, lastEvent: string | null = null
+      // Observe event metadata without retaining or buffering the response stream.
       const decoder = new TextDecoder()
       let pending = ''
       const observe = (chunk: Uint8Array) => {
@@ -152,7 +157,11 @@ export class Xingchen {
         pending = lines.pop() ?? ''
         for (const line of lines) {
           if (line.startsWith('data:')) {
-            try { if (JSON.parse(line.slice(5)).event === 'error') streamError = '星辰智能体返回流内错误' } catch {}
+            try {
+              const event = JSON.parse(line.slice(5)).event
+              if (typeof event === 'string') { events++; lastEvent = event.slice(0, 80) }
+              if (event === 'error') streamError = '星辰智能体返回流内错误'
+            } catch {}
           }
         }
         if (pending.length > 65_536) pending = ''
@@ -163,7 +172,7 @@ export class Xingchen {
         if (ended) return
         ended = true
         release()
-        options.onStreamDone?.(error)
+        options.onStreamDone?.(error, { bytes: size, events, lastEvent })
       }
       // A slow client may stop reading with one buffered chunk. Release the slot at the deadline even then.
       controller.signal.addEventListener('abort', () => done('星辰转发超时或请求已取消'), { once: true })

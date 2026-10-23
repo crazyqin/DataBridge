@@ -95,6 +95,9 @@ test('call previews redact credentials and preserve exact numeric values and rep
     diagnostic.captureBody('{"id":9007199254740993,"amount":1.10,"nested":{"password":"hidden-password","api_key":"hidden-key"},"alias":"synthetic-user-ticket","cookieAlias":"synthetic-cookie","keyAlias":"synthetic-api-key","serviceAlias":"synthetic-service-secret"}')
     const trace = diagnostic.trace
     assert.deepEqual(JSON.parse(trace.query).q, ['one', 'two'])
+    assert.match(trace.url!, /^https:\/\/bridge\.example\.invalid\/open\/request-logs\?/)
+    assert.deepEqual(new URL(trace.url!).searchParams.getAll('q'), ['one', 'two'])
+    assert.equal(new URL(trace.url!).searchParams.get('ticket'), '[REDACTED]')
     assert.match(trace.body!, /9007199254740993/)
     assert.match(trace.body!, /1\.10/)
     assert.equal(JSON.parse(trace.headers)['user-agent'], 'SyntheticClient/1')
@@ -138,6 +141,20 @@ test('GET, POST, rejected authorization and invalid parameters retain request de
     assert.deepEqual(JSON.parse(last().query), { q: 'query-one', page: '1', pageSize: '2' })
     assert.equal(last().status, 200)
     assert.equal(last().body, null)
+    assert.equal(last().url, 'http://localhost/open/request-logs?q=query-one&page=1&pageSize=2')
+    assert.equal(last().api!.name, definition.name)
+    assert.equal(last().api!.code, definition.code)
+    assert.equal(last().api!.version, api.version)
+    assert.deepEqual(last().pagination, { page: 1, pageSize: 2 })
+    assert.deepEqual(JSON.parse(last().parameters!), { q: 'query-one' })
+    const wire = await response.text()
+    assert.deepEqual(JSON.parse(last().responseBody!), JSON.parse(wire))
+    assert.equal(last().responseBytes, Buffer.byteLength(wire))
+    assert.equal(last().statusText, 'OK')
+    assert.deepEqual(JSON.parse(last().responseHeaders!), Object.fromEntries(response.headers))
+    assert.equal(JSON.parse(last().responseHeaders!)['x-request-id'], f.logs.list({}).items[0].requestId)
+    assert.ok(last().steps!.every(step => step.ok && step.elapsedMs >= 0))
+    assert.equal(last().errorStage, null)
     assert.equal(f.logs.list({}).items[0].rowCount, 1)
     f.apis.save(api.id, { ...definition, method: 'POST', version: api.version })
     response = await f.app.request('/open/request-logs?context=example', { method: 'POST', body: '{"id":9007199254740993,"amount":1.10}' })
@@ -155,12 +172,19 @@ test('GET, POST, rejected authorization and invalid parameters retain request de
     response = await f.app.request('/open/request-logs', { method: 'POST', headers: { 'X-API-Key': 'invalid-synthetic-key' }, body: '{"q":"query-one","alias":"invalid-synthetic-key"}' })
     assert.equal(response.status, 401)
     assert.equal(last().status, 401)
+    assert.equal(last().errorStage, 'access')
+    assert.equal(last().steps!.at(-1)!.ok, false)
+    assert.deepEqual(JSON.parse(last().responseBody!), await response.json())
+    assert.deepEqual(JSON.parse(last().responseHeaders!), Object.fromEntries(response.headers))
     assert.equal(JSON.parse(last().body!).q, 'query-one')
     assert.doesNotMatch(JSON.stringify(last()), /invalid-synthetic-key/)
     response = await f.app.request('/open/missing?q=missing-input')
     assert.equal(response.status, 404)
     assert.equal(last().status, 404)
     assert.equal(last().path, '/open/missing')
+    assert.equal(last().errorStage, 'routing')
+    assert.equal(last().api, null)
+    assert.equal(JSON.parse(last().responseBody!).code, 40401)
     assert.equal(f.logs.list({}).items[0].apiId, null)
     const stored = JSON.stringify(f.db.prepare('SELECT detail FROM request_detail_log').all())
     assert.doesNotMatch(stored, /invalid-synthetic-key|never-persist/)
@@ -182,7 +206,12 @@ test('call details require admin access, remain readable after API deletion and 
     f.apis.remove(api.id)
     const response = await f.app.request(path, { headers })
     assert.equal(response.status, 200)
-    assert.equal(JSON.parse((await response.json()).request.query).q, 'admin-only-query')
+    const detail = (await response.json()).request
+    assert.equal(JSON.parse(detail.query).q, 'admin-only-query')
+    assert.equal(detail.api.name, definition.name)
+    assert.equal(detail.api.code, definition.code)
+    assert.equal(detail.api.id, api.id)
+    assert.equal(detail.url, 'http://localhost/open/request-logs?q=admin-only-query')
     assert.equal((await f.app.request('/admin/logs/9999/details', { headers })).status, 404)
     f.db.prepare('UPDATE request_log SET at = ?').run('2000-01-01T00:00:00.000Z')
     f.logs.prune(30)
@@ -208,5 +237,45 @@ test('v1.2.1 logs upgrade without losing summaries and remain explicitly without
     } finally { upgraded.close() }
     assert.equal((await f.app.request('/open/new-request')).status, 404)
     assert.equal(f.logs.list({}).items[0].hasRequest, true)
+  } finally { await f.close() }
+})
+
+
+test('response previews preserve exact numbers, redact cross-field copies and bound every stored preview', () => {
+  const diagnostic = callDiagnostics(new Request('https://bridge.example.invalid/open/test?alias=request-secret', {
+    method: 'POST', headers: { 'X-Alias': 'request-secret' },
+  }))
+  diagnostic.captureBody('{"password":"request-secret","alias":"response-secret","id":9007199254740993}')
+  diagnostic.captureResponseBody('{"id":9007199254740993,"amount":1.10,"token":"response-secret","alias":"response-secret","nested":{"password":"nested-secret"},"requestAlias":"request-secret","text":"' + '长'.repeat(5000) + '"}')
+  diagnostic.captureResponse(new Response(null, { status: 200, headers: {
+    'Content-Type': 'application/json', 'Set-Cookie': 'session=response-cookie; HttpOnly', 'X-Echo': 'request-secret',
+  } }))
+  assert.match(diagnostic.trace.responseBody!, /9007199254740993/)
+  assert.match(diagnostic.trace.responseBody!, /1\.10/)
+  assert.doesNotMatch(JSON.stringify(diagnostic.trace), /request-secret|response-secret|nested-secret|response-cookie/)
+  assert.equal(diagnostic.trace.responseBodyTruncated, true)
+  assert.equal(JSON.parse(diagnostic.trace.responseHeaders!)['set-cookie'], '[REDACTED]')
+  for (const key of ['url','query','headers','body','responseHeaders','responseBody'] as const) {
+    assert.ok(Buffer.byteLength(diagnostic.trace[key]!) <= 8192)
+    assert.ok(!diagnostic.trace[key]!.endsWith('\uFFFD'))
+  }
+})
+
+test('client address respects proxy trust and stored API snapshots do not follow later edits', async () => {
+  const f = fixture()
+  try {
+    const api = f.apis.save(undefined, definition)
+    const request = () => f.app.request('https://bridge.example.invalid/open/request-logs?q=example', {
+      headers: { 'X-Forwarded-For': '203.0.113.42, 10.0.0.8', 'User-Agent': 'SyntheticCaller/2' },
+    })
+    await request()
+    const first = f.logs.list({}).items[0]
+    assert.equal(f.logs.detail(first.id).request!.clientAddress, 'unknown')
+    f.config.trustProxy = true
+    await request()
+    assert.equal(f.logs.detail(f.logs.list({}).items[0].id).request!.clientAddress, '203.0.113.42')
+    f.apis.save(api.id, { ...definition, name: 'Renamed interface', code: 'renamed_interface', version: api.version })
+    assert.equal(f.logs.detail(first.id).request!.api!.name, definition.name)
+    assert.equal(f.logs.detail(first.id).request!.api!.code, definition.code)
   } finally { await f.close() }
 })

@@ -32,10 +32,14 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
     if (value.type === 'literal' && !visibleValues.has(value.value)) secret(value.value)
     if (value.type === 'digest') for (const part of value.parts) expression(part)
   }
-  function collect(value: Json, name = '') {
-    if (typeof value === 'string' && sensitive(name)) secret(value)
-    if (Array.isArray(value)) for (const part of value) collect(part, name)
-    else if (isObject(value)) for (const [key, part] of Object.entries(value)) collect(part, key)
+  function collect(value: Json, name = '', depth = 0) {
+    if (depth > 30) return
+    if (sensitive(name) || name === config?.tokenName) {
+      if (typeof value === 'string') secret(value)
+      else if (typeof value === 'number' || JSON.isRawJSON(value)) secret(JSON.stringify(value))
+    }
+    if (Array.isArray(value)) for (const part of value) collect(part, name, depth + 1)
+    else if (isObject(value)) for (const [key, part] of Object.entries(value)) collect(part, key, depth + 1)
   }
   secret(credential)
   for (const value of extraSecrets) secret(value)
@@ -51,11 +55,17 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
     }
     collect(config.body)
   }
-  const orderedSecrets = () => [...secrets].sort((a, b) => b.length - a.length)
+  let secretCount = -1
+  let secretPattern: RegExp | undefined
   function text(value: string): string {
     let result = value
-    const pattern = orderedSecrets().map(item => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-    if (pattern) result = result.replace(new RegExp(pattern, 'g'), () => REDACTED)
+    if (secretCount !== secrets.size) {
+      const pattern = [...secrets].sort((a, b) => b.length - a.length)
+        .map(item => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+      secretPattern = pattern ? new RegExp(pattern, 'g') : undefined
+      secretCount = secrets.size
+    }
+    if (secretPattern) result = result.replace(secretPattern, () => REDACTED)
     // Also cover truncated/non-JSON bodies and credential-bearing redirect URLs.
     result = result.replace(/(["']([^"'\r\n]+)["']\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,}\r\n]+)/g,
       (match, prefix: string, name: string) => sensitive(name) ? prefix + JSON.stringify(REDACTED) : match)
@@ -97,7 +107,7 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
     const bytes = Buffer.from(safe)
     return { text: new TextDecoder().decode(bytes.subarray(0, AUTH_PREVIEW_BYTES), { stream: true }), truncated: bytes.length > AUTH_PREVIEW_BYTES }
   }
-  return { text, json, url, headers, body }
+  return { text, json, url, headers, body, remember: (value: Json) => collect(value) }
 }
 
 /** Bounded reads, including chunked bodies and providers that omit Content-Length. */
