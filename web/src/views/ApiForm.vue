@@ -150,6 +150,7 @@ async function confirmDataChanges(next: Api): Promise<boolean> {
 }
 
 async function save() {
+  if (saving.value) return
   fillCode()
   let body: Api
   try { body = payload() } catch (error) { ElMessage.error((error as Error).message); return }
@@ -166,6 +167,7 @@ async function save() {
     form.value = editable(api)
     lists.value = listsOf(api)
     ElMessage.success(api.enabled ? '已保存并启用' : '已保存为草稿')
+    if (api.enabled) emit('close')
   } finally {
     saving.value = false
   }

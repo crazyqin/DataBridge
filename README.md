@@ -22,16 +22,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.3.0 .
+docker build --platform linux/amd64 -t databridge:1.3.1 .
 mkdir -p release
-docker save databridge:1.3.0 | gzip > release/databridge-1.3.0-amd64.tar.gz
+docker save databridge:1.3.1 | gzip > release/databridge-1.3.1-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.3.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.3.1-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.3.0` |
+| Image | `databridge:1.3.1` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -72,7 +72,7 @@ cat /data/initial-admin-password
 - **身份服务**：集中保存凭证传递方式、验证地址、签名、成功条件和身份字段映射。
 - **星辰平台**：集中保存包含 `/v1` 的基础地址；应用 ID、API Key 和 SM2 公钥仍由各接口单独维护。
 
-创建接口时只需选择连接。只有一个可选连接时自动选中；也可在接口表单中打开抽屉新建或编辑连接，已填写的业务配置会保留。接口编辑按「基本设置 → 业务配置 → 测试发布」组织，高级选项折叠，保存时可选择草稿或启用。
+创建接口时只需选择连接。只有一个可选连接时自动选中；也可在接口表单中打开抽屉新建或编辑连接，已填写的业务配置会保留。接口编辑按「基本设置 → 业务配置 → 测试发布」组织，高级选项折叠，保存时可选择草稿或启用。「保存并启用」成功后自动返回列表并刷新，保留当前项目和筛选条件；保存草稿时留在编辑页，方便继续配置和测试，保存失败时也会保留当前表单。
 
 接口列表的「更多 → 复制接口」会立即创建停用的副本并打开编辑页，保留业务配置、应用凭据、共享连接和所属项目，自动生成不冲突的名称、路径及编码。副本不复制手工数据、快照数据或运行历史；确认配置后可启用。基本设置中的「接口编码（英文）」可以直接修改，包括复制生成的 `_copy` 后缀；新建时留空按路径自动生成，修改编码不会改变调用地址。
 
@@ -125,7 +125,7 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001'
 1. 在「连接管理」创建身份服务，填写验证地址和成功条件。在身份映射中将验证响应的工号路径（例如 `data.staffCode`）映射到 `_auth_staff_code`，类型选 `string`，保留工号前导零。
 2. 在「连接管理」创建星辰平台，填写基础地址（包含 `/v1`，例如 `https://agent.example.com/v1`）。接口的「基本设置」选择上述两个连接，再到「业务配置」填写应用 ID、API Key 和 `04` 开头的 130 位十六进制 SM2 公钥。系统发送到 `{基础地址}/chat-messages/{app_id}`。
 3. 选择工号身份参数。每次请求使用 SM2 C1C3C2 加密紧凑 UTF-8 JSON：`{"staff_code":"<已验证工号>","iat":<Unix秒>,"nonce":"<16字节随机数的base64url>"}`。按文档已实测的 Python 格式输出原始 `x||y||C3||C2`（不带 `04` 点前缀、非 ASN.1），无填充 base64url 编码后加 `v2.`，放入 `Znt-Staff-Code`；`api_key` 放入 `Authorization: Bearer …`。
-4. OA 通讯录查询使用默认映射：调用者参数 `q` → 智能体变量 `q`（实际为 `input_data.q`），提问参数也选 `q`，同时填写顶层 `query`。其他应用可配置多个变量，值按声明类型转换；未传的可选变量不写入 `input_data`。
+4. OA 通讯录查询使用默认映射：调用者参数 `q` → 智能体变量 `q`（实际为 `input_data.q`），提问参数也选 `q`，同时填写顶层 `query`。其他应用可配置多个变量；选择调用者请求参数后，智能体变量默认同名。未自定义的变量名随参数切换，手动填写的自定义名称会保留。下拉框隐藏其他映射行已使用的参数，删除或改选后可重新选择。值按声明类型转换；未传的可选变量不写入 `input_data`。
 5. 首次调用可省略 `conversation_id`，后续将平台返回的会话 ID 原样传回。默认 JSON 阻塞模式，也可选 SSE 流式。到「测试发布」填写本次身份凭证，点击「测试星辰转发」，系统会先验证身份再执行转发；编辑页测试统一用 blocking 模式便于查看完整结果，无需先保存。
 6. 启用并保存，调用者仅提交身份凭证和已声明的业务参数：
 

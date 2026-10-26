@@ -4,6 +4,16 @@ import type { ExternalAuthConfig, Field, XingchenConfig } from '../api'
 const props = defineProps<{ params: Field[]; bindings: ExternalAuthConfig['bindings'] }>()
 const config = defineModel<XingchenConfig>({ required: true })
 const strings = computed(() => props.params.filter(param => param.type === 'string'))
+const mappedParameters = computed(() => new Set(config.value.inputMappings.map(mapping => mapping.parameter)))
+
+function availableParameters(current: string) {
+  return props.params.filter(param => param.name === current || !mappedParameters.value.has(param.name))
+}
+
+function selectParameter(mapping: XingchenConfig['inputMappings'][number], parameter: string) {
+  if (!mapping.variable.trim() || mapping.variable === mapping.parameter) mapping.variable = parameter
+  mapping.parameter = parameter
+}
 </script>
 
 <template>
@@ -25,7 +35,7 @@ const strings = computed(() => props.params.filter(param => param.type === 'stri
     <div style="width: 100%">
       <el-table :data="config.inputMappings" size="small" empty-text="未配置工作流变量">
         <el-table-column label="调用者请求参数">
-          <template #default="{ row }"><el-select v-model="row.parameter"><el-option v-for="param in params" :key="param.name" :value="param.name" /></el-select></template>
+          <template #default="{ row }"><el-select :model-value="row.parameter" no-data-text="没有可添加的请求参数" @update:model-value="selectParameter(row, $event)"><el-option v-for="param in availableParameters(row.parameter)" :key="param.name" :value="param.name" /></el-select></template>
         </el-table-column>
         <el-table-column label="智能体变量（input_data 内）">
           <template #default="{ row }"><el-input v-model="row.variable" placeholder="q" /></template>
@@ -33,7 +43,7 @@ const strings = computed(() => props.params.filter(param => param.type === 'stri
         <el-table-column width="65"><template #default="{ $index }"><el-button link type="danger" @click="config.inputMappings.splice($index, 1)">删除</el-button></template></el-table-column>
       </el-table>
       <el-button text type="primary" @click="config.inputMappings.push({ parameter: '', variable: '' })">+ 添加映射</el-button>
-      <div class="muted">OA 通讯录查询：请求参数 q → 智能体变量 q，即 input_data.q。请求参数在上方声明。</div>
+      <div class="muted">选择调用者请求参数后，智能体变量默认同名，也可手动修改。请求参数在上方声明。</div>
     </div>
   </el-form-item>
   <el-form-item label="提问 query">
