@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ name: 'bridge' | 'overview' | 'apis' | 'rows' | 'logs' | 'connections' | 'sources' | 'keys' | 'plus' | 'refresh' | 'search' | 'arrow' | 'chevron' | 'user' | 'logout' | 'activity' }>()
+defineProps<{ name: 'bridge' | 'overview' | 'apis' | 'rows' | 'logs' | 'connections' | 'sources' | 'keys' | 'plus' | 'refresh' | 'search' | 'arrow' | 'chevron' | 'user' | 'logout' | 'activity' | 'folder' }>()
 const paths: Record<string, string> = {
   bridge: 'M3 18h18M4 18V9m16 9V9M4 12c4-7 12-7 16 0M8 18v-9m4 9V7m4 11v-9',
   overview: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z',
@@ -17,6 +17,7 @@ const paths: Record<string, string> = {
   user: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-2a8 8 0 0 1 16 0v2',
   logout: 'M9 4H4v16h5m5-12 4 4-4 4m-5-4h12',
   activity: 'M3 12h4l3-8 4 16 3-8h4',
+  folder: 'M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z',
 }
 </script>
 

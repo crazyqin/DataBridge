@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Cron } from 'croner'
 import { Connections } from './connections.ts'
+import { Projects } from './projects.ts'
 import { decrypt, encrypt, type Config } from './config.ts'
 import { now, transaction, type Db } from './db.ts'
 import { bad, conflict, forbidden, HttpError, notFound } from './errors.ts'
@@ -20,6 +21,8 @@ export interface Api {
   id: number
   name: string
   code: string
+  projectIds: number[]
+  projectVersion: number
   path: string
   method: 'GET' | 'POST'
   auth: 'API_KEY' | 'PUBLIC' | 'EXTERNAL'
@@ -63,6 +66,7 @@ function withRemark(row: Row, remark: string): Row {
 }
 
 interface ApiRow {
+  project_version: number
   id: number; name: string; code: string; path: string; method: Api['method']; auth: Api['auth']; user_agents: string
   external_auth: string | null; xingchen: string | null; auth_connection_id: number | null; xingchen_connection_id: number | null
   mode: Mode; datasource_id: number | null; sql_text: string | null; params: string; fields: string; filters: string
@@ -71,12 +75,13 @@ interface ApiRow {
   created_at: string; updated_at: string
 }
 
-const toApi = (row: ApiRow, config: Config, connections: Connections): Api => {
+const toApi = (row: ApiRow, config: Config, connections: Connections, projects: Projects): Api => {
   const auth = row.auth_connection_id ? connections.get(row.auth_connection_id, 'EXTERNAL_AUTH') : null
   const platform = row.xingchen_connection_id ? connections.get(row.xingchen_connection_id, 'XINGCHEN') : null
   const application = row.xingchen ? parse(decrypt(config.secretKey, row.xingchen)) as unknown as XingchenConfig : null
   return ({
   id: row.id, name: row.name, code: row.code, path: row.path, method: row.method, auth: row.auth,
+  projectIds: projects.idsForApi(row.id), projectVersion: row.project_version,
   authConnectionId: row.auth_connection_id, xingchenConnectionId: row.xingchen_connection_id,
   authConnectionName: auth?.name ?? null, xingchenConnectionName: platform?.name ?? null,
   externalAuth: auth ? auth.config as ExternalAuthConfig : null,
@@ -132,6 +137,7 @@ function toPg(value: Json): string | null {
 
 export class Apis {
   readonly connections: Connections
+  readonly projects: Projects
   private readonly jobs = new Map<number, Cron>()
   private readonly syncing = new Set<number>()
   private readonly db: Db
@@ -143,24 +149,25 @@ export class Apis {
     this.sources = sources
     this.config = config
     this.connections = new Connections(db, config)
+    this.projects = new Projects(db)
     this.connections.migrateLegacy()
   }
 
   // ---- configuration ----
 
   list(): Api[] {
-    return (this.db.prepare('SELECT * FROM api ORDER BY id DESC').all() as unknown as ApiRow[]).map(row => this.withSchedule(toApi(row, this.config, this.connections)))
+    return (this.db.prepare('SELECT * FROM api ORDER BY id DESC').all() as unknown as ApiRow[]).map(row => this.withSchedule(toApi(row, this.config, this.connections, this.projects)))
   }
 
   get(id: number): Api {
     const row = this.db.prepare('SELECT * FROM api WHERE id = ?').get(id) as ApiRow | undefined
     if (!row) throw notFound('API 不存在')
-    return this.withSchedule(toApi(row, this.config, this.connections))
+    return this.withSchedule(toApi(row, this.config, this.connections, this.projects))
   }
 
   findOpen(path: string, method: string): Api | undefined {
     const row = this.db.prepare('SELECT * FROM api WHERE path = ? AND method = ? AND enabled = 1').get(path, method) as ApiRow | undefined
-    return row && toApi(row, this.config, this.connections)
+    return row && toApi(row, this.config, this.connections, this.projects)
   }
 
   private withSchedule(api: Api): Api {
@@ -280,11 +287,14 @@ export class Apis {
         const result = this.db.prepare(`INSERT INTO api (name, code, path, method, auth, user_agents, mode, datasource_id, sql_text,
           params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, external_auth, xingchen, auth_connection_id, xingchen_connection_id, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
-        return Number(result.lastInsertRowid)
+        const apiId = Number(result.lastInsertRowid)
+        if (input.projectIds !== undefined) this.projects.assign(apiId, input.projectIds)
+        return apiId
       }
       const version = integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER)
       const current = this.get(id)
       if (current.version !== version) throw conflict('API 配置已被修改，请刷新后再保存')
+      if (input.projectIds !== undefined) this.projects.assign(id, input.projectIds, integer(input, 'projectVersion', '项目归类版本', 1, Number.MAX_SAFE_INTEGER))
       this.db.prepare(`UPDATE api SET name = ?, code = ?, path = ?, method = ?, auth = ?, user_agents = ?, mode = ?,
         datasource_id = ?, sql_text = ?, params = ?, fields = ?, filters = ?, key_fields = ?, cron = ?, cron_timezone = ?, allow_empty = ?,
         timeout_seconds = ?, max_rows = ?, enabled = ?, external_auth = ?, xingchen = ?, auth_connection_id = ?, xingchen_connection_id = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(...columns, time, id)

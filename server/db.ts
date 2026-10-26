@@ -118,6 +118,20 @@ const MIGRATIONS = [
     log_id INTEGER PRIMARY KEY REFERENCES request_log(id) ON DELETE CASCADE,
     detail TEXT NOT NULL
   );`,
+  `CREATE TABLE project (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  ALTER TABLE api ADD COLUMN project_version INTEGER NOT NULL DEFAULT 1;
+  CREATE TABLE api_project (
+    api_id INTEGER NOT NULL REFERENCES api(id) ON DELETE CASCADE,
+    project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+    PRIMARY KEY (api_id, project_id)
+  );
+  CREATE INDEX api_project_project ON api_project(project_id);`,
 ]
 
 export type Db = DatabaseSync

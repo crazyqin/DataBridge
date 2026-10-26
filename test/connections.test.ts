@@ -245,7 +245,8 @@ test('v1.1 databases migrate atomically, deduplicate shared settings and preserv
         .run(encrypt(config.secretKey, stringify(api.externalAuth)), encrypt(config.secretKey, stringify(api.xingchen)), api.id)
     }
     // Recreate the authoritative v1.1 schema boundary before opening with the new migration.
-    db.exec(`DROP INDEX api_auth_connection; DROP INDEX api_xingchen_connection;
+    db.exec(`DROP TABLE api_project; DROP TABLE project; ALTER TABLE api DROP COLUMN project_version;
+      DROP INDEX api_auth_connection; DROP INDEX api_xingchen_connection;
       ALTER TABLE api DROP COLUMN auth_connection_id; ALTER TABLE api DROP COLUMN xingchen_connection_id;
       DROP TABLE request_detail_log; ALTER TABLE request_log DROP COLUMN method;
       ALTER TABLE request_log DROP COLUMN path; ALTER TABLE request_log DROP COLUMN status;

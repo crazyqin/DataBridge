@@ -236,7 +236,8 @@ test('v1.2.1 logs upgrade without losing summaries and remain explicitly without
   const f = fixture()
   try {
     f.logs.write({ requestId: 'legacy-request', at: now(), apiId: null, mode: 'MANUAL', elapsedMs: 3, rowCount: 2, ok: true, error: null })
-    f.db.exec(`DROP TABLE request_detail_log; ALTER TABLE request_log DROP COLUMN method;
+    f.db.exec(`DROP TABLE api_project; DROP TABLE project; ALTER TABLE api DROP COLUMN project_version;
+      DROP TABLE request_detail_log; ALTER TABLE request_log DROP COLUMN method;
       ALTER TABLE request_log DROP COLUMN path; ALTER TABLE request_log DROP COLUMN status; PRAGMA user_version = 7;`)
     const upgraded = openDb(f.config.dbFile)
     try {

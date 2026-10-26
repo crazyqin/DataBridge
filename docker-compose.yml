@@ -1,6 +1,6 @@
 services:
   databridge:
-    image: databridge:1.2.8
+    image: databridge:1.3.0
     build: .
     platform: linux/amd64
     restart: unless-stopped

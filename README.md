@@ -22,16 +22,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.2.8 .
+docker build --platform linux/amd64 -t databridge:1.3.0 .
 mkdir -p release
-docker save databridge:1.2.8 | gzip > release/databridge-1.2.8-amd64.tar.gz
+docker save databridge:1.3.0 | gzip > release/databridge-1.3.0-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.2.8-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.3.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.2.8` |
+| Image | `databridge:1.3.0` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -74,13 +74,26 @@ cat /data/initial-admin-password
 
 创建接口时只需选择连接。只有一个可选连接时自动选中；也可在接口表单中打开抽屉新建或编辑连接，已填写的业务配置会保留。接口编辑按「基本设置 → 业务配置 → 测试发布」组织，高级选项折叠，保存时可选择草稿或启用。
 
-接口列表的「更多 → 复制接口」会立即创建停用的副本并打开编辑页，保留业务配置、应用凭据和共享连接，自动生成不冲突的名称、路径及编码。副本不复制手工数据、快照数据或运行历史；确认配置后可启用。基本设置中的「接口编码（英文）」可以直接修改，包括复制生成的 `_copy` 后缀；新建时留空按路径自动生成，修改编码不会改变调用地址。
+接口列表的「更多 → 复制接口」会立即创建停用的副本并打开编辑页，保留业务配置、应用凭据、共享连接和所属项目，自动生成不冲突的名称、路径及编码。副本不复制手工数据、快照数据或运行历史；确认配置后可启用。基本设置中的「接口编码（英文）」可以直接修改，包括复制生成的 `_copy` 后缀；新建时留空按路径自动生成，修改编码不会改变调用地址。
 
 修改共享连接后，所有关联 API 的**后续请求立即生效**，无需逐个保存或重启。连接编辑器显示受影响的接口；被引用的连接不能删除，正在使用的身份字段不能删除或改变类型。连接有独立版本号，过期页面保存返回 409。
 
 升级时自动把旧 API 内的身份验证配置和星辰地址转为共享连接：相同平台地址合并；验证设置相同且身份字段兼容时合并，字段冲突则分别保留。接口路径、启用状态及应用凭据不变。迁移在事务中执行，失败会回滚并停止启动，修复后可重试。配置整体加密保存，包括内部地址；列表只返回名称、引用关系和必要的身份字段元数据。
 
 管理接口提供 `/admin/connections` 的列表/创建及 `/admin/connections/:id` 的读取/更新/删除。保存 API 时用 `authConnectionId` 和 `xingchenConnectionId` 引用连接；传入引用后以共享配置为准。旧管理客户端仍可提交内嵌配置，系统自动归入连接。`GET /admin/apis` 不再返回身份验证和星辰的完整敏感配置；编辑时使用 `GET /admin/apis/:id` 读取详情。
+
+## 按项目整理接口
+
+「接口管理」左侧提供「全部接口」「未归类」及项目列表。可以用 skill 名称或业务功能命名项目，并填写说明；项目旁显示已归类的接口数量。同一接口可以加入多个项目，共用原来的地址、配置和数据。
+
+- 点击「新建项目」创建分组；选中项目后可以编辑名称、说明或删除项目。
+- 在列表中勾选一个或多个接口，点击「加入项目」批量归类；在某个项目内可将所选接口「移出当前项目」。这些操作保留其他项目归类。
+- 在项目内创建接口时自动选择当前项目；接口「基本设置 → 所属项目」支持多选，也可直接新建项目。复制接口沿用原接口的项目。
+- 删除项目只解除归类关系，不删除接口、数据或历史记录。未加入任何项目的接口显示在「未归类」，所有接口始终可以在「全部接口」找到。
+
+项目归类不改变接口地址、鉴权或启用状态，不影响定时同步任务。升级后已有接口自动显示为「未归类」。项目和归类变更分别有版本检查，防止旧编辑页覆盖更新。
+
+管理 API：`GET/POST /admin/projects` 列表/创建项目，`PUT/DELETE /admin/projects/:id` 更新/删除项目；`PATCH /admin/projects/:id/apis` 接收 `{"operation":"add","apiIds":[1,2]}` 或 `remove`，每批最多 500 个接口。保存接口时可提交 `projectIds`（最多 100 个项目），编辑已有接口同时提交读取时的 `projectVersion`；省略 `projectIds` 时保留原归类，提交空数组则清空。列表和接口详情均返回项目 ID 与归类版本，项目列表返回 `apiCount`。所有项目管理接口仅管理员可用。
 
 ## 创建第一个接口
 

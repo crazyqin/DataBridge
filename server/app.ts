@@ -181,6 +181,15 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
 
   // ---- APIs ----
 
+  app.get('/admin/projects', c => admin(c, apis.projects.list()))
+  app.post('/admin/projects', async c => admin(c, apis.projects.save(undefined, await readJson(c)), 201))
+  app.put('/admin/projects/:id', async c => admin(c, apis.projects.save(id(c.req.param('id')), await readJson(c))))
+  app.delete('/admin/projects/:id', c => {
+    apis.projects.remove(id(c.req.param('id')))
+    return c.body(null, 204)
+  })
+  app.patch('/admin/projects/:id/apis', async c => admin(c, apis.projects.changeMembers(id(c.req.param('id')), await readJson(c))))
+
   app.get('/admin/apis', c => admin(c, apis.list().map(api => ({ ...api, externalAuth: null, xingchen: null }))))
   app.post('/admin/apis', async c => admin(c, apis.save(undefined, await readJson(c)), 201))
   /** Verify the edited identity configuration without requiring a data source or SQL. */

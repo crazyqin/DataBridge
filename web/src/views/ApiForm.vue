@@ -10,11 +10,14 @@ import TestRequestTrace from './TestRequestTrace.vue'
 import type { RequestTrace } from '../request-trace'
 import { completeTestParams } from '../test-params'
 import SyncHistoryDialog from './SyncHistoryDialog.vue'
+import ProjectEditor from './ProjectEditor.vue'
+import type { Project } from '../api'
 
-const props = defineProps<{ api: Api | null }>()
+const props = defineProps<{ api: Api | null; initialProjectId?: number }>()
 const emit = defineEmits<{ close: [] }>()
 
 const blank: Api = {
+  projectIds: props.initialProjectId ? [props.initialProjectId] : [],
   name: '', code: '', path: '/open/', method: 'GET', auth: 'API_KEY', userAgents: [], mode: 'REALTIME', datasourceId: null,
   externalAuth: null, xingchen: null, authConnectionId: null, xingchenConnectionId: null,
   sql: '', params: [], fields: [], filters: [], keyFields: [], cron: '0 */30 * * * *',
@@ -39,6 +42,13 @@ const showHistory = ref(false)
 const testParams = ref('{}')
 const testCredential = ref('')
 const connections = ref<ConnectionSummary[]>([])
+const projects = ref<Project[]>([])
+const creatingProject = ref(false)
+async function projectSaved(project: Project) {
+  projects.value = await request<Project[]>('/admin/projects')
+  form.value.projectIds = [...new Set([...form.value.projectIds, project.id])]
+  creatingProject.value = false
+}
 const activeTab = ref('basic')
 const diagnostics = ref<string[]>([])
 const connectionEditor = ref<{ id?: number; kind: ConnectionKind }>()
@@ -162,7 +172,7 @@ async function save() {
 }
 
 async function reload() {
-  await loadConnections()
+  await Promise.all([loadConnections(), request<Project[]>('/admin/projects').then(items => { projects.value = items })])
   const api = await request<Api>(`/admin/apis/${saved.value!.id}`)
   saved.value = api
   form.value = editable(api)
@@ -202,7 +212,8 @@ async function test() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadConnections(), request<Datasource[]>('/admin/datasources').then(items => { sources.value = items })])
+  await Promise.all([loadConnections(), request<Datasource[]>('/admin/datasources').then(items => { sources.value = items }),
+    request<Project[]>('/admin/projects').then(items => { projects.value = items })])
   if (!props.api && authConnections.value.length === 1) form.value.auth = 'EXTERNAL'
 })
 </script>
@@ -227,6 +238,15 @@ onMounted(async () => {
             <el-form-item label="接口路径" required><el-input v-model="form.path" placeholder="/open/contacts" @blur="fillCode" /></el-form-item>
             <el-form-item label="接口编码（英文）"><el-input v-model="form.code" maxlength="100" placeholder="留空按接口路径自动生成" /><div class="field-help">可直接修改，包括复制后的 _copy 后缀。以字母开头，可含字母、数字和下划线；编码不影响调用地址。</div></el-form-item>
           </div>
+          <el-form-item label="所属项目">
+            <div class="connection-picker">
+              <el-select v-model="form.projectIds" multiple filterable clearable collapse-tags collapse-tags-tooltip :max-collapse-tags="3" placeholder="未归类，可选择多个项目">
+                <el-option v-for="project in projects" :key="project.id" :value="project.id" :label="project.name" />
+              </el-select>
+              <el-button @click="creatingProject = true">新建项目</el-button>
+            </div>
+            <div class="field-help">将同一 skill 或业务功能使用的接口放在一起，一个接口可加入多个项目。</div>
+          </el-form-item>
           <el-form-item label="调用方式"><el-radio-group v-model="form.method"><el-radio-button value="GET">GET · 查询参数</el-radio-button><el-radio-button value="POST">POST · JSON 请求体</el-radio-button></el-radio-group></el-form-item>
         </section>
         <section class="editor-section">
@@ -317,4 +337,5 @@ onMounted(async () => {
   </el-form>
   <ConnectionEditor v-if="connectionEditor" :key="`${connectionEditor.kind}-${connectionEditor.id}`" :id="connectionEditor.id" :kind="connectionEditor.kind" @close="connectionEditor = undefined" @saved="connectionSaved" />
   <SyncHistoryDialog v-if="showHistory && saved?.id" :api="saved" @close="showHistory = false" />
+  <ProjectEditor v-if="creatingProject" @close="creatingProject = false" @saved="projectSaved" />
 </template>

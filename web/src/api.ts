@@ -83,7 +83,14 @@ export interface Connection extends Omit<ConnectionSummary, 'bindings' | 'inputH
 }
 export const CONNECTION_LABELS: Record<ConnectionKind, string> = { EXTERNAL_AUTH: '身份服务', XINGCHEN: '星辰平台' }
 
+export interface Project {
+  id: number; name: string; description: string; version: number; apiCount: number
+  createdAt: string; updatedAt: string
+}
+
 export interface Api {
+  projectIds: number[]
+  projectVersion?: number
   id?: number; name: string; code: string; path: string; method: 'GET' | 'POST'; auth: 'API_KEY' | 'PUBLIC' | 'EXTERNAL'
   authConnectionId: number | null
   xingchenConnectionId: number | null
