@@ -72,7 +72,7 @@ onMounted(async () => {
 
 <template>
   <div class="page-head">
-    <div><p class="eyebrow">REQUEST ACTIVITY</p><h2>调用日志</h2><p>查看完整请求、响应预览与身份验证详情；凭证和密码等敏感字段已脱敏</p></div>
+    <div><p class="eyebrow">REQUEST ACTIVITY</p><h2>调用日志</h2><p>查看完整请求、响应预览与身份验证详情</p></div>
   </div>
   <div class="toolbar">
     <el-select v-model="filter.apiId" clearable placeholder="全部 API" style="width: 200px">
@@ -138,9 +138,9 @@ onMounted(async () => {
             <template v-if="!['GET', 'HEAD'].includes(detail.request.method)">
               <h4>请求体（JSON）<span v-if="detail.request.bodyTruncated" class="muted"> · 内容较长，已截断</span></h4>
               <p v-if="detail.request.bodyNote" class="muted">{{ detail.request.bodyNote }}</p>
-              <pre v-else class="result">{{ detail.request.body || '空请求体' }}</pre>
+              <pre v-if="detail.request.body !== null" class="result">{{ detail.request.body || '空请求体' }}</pre>
             </template>
-            <h4>请求 Header（已脱敏）</h4>
+            <h4>请求 Header</h4>
               <p v-if="detail.request.headersTruncated" class="muted">内容较长，已截断</p>
               <pre class="result">{{ detail.request.headers }}</pre>
             <template v-if="detail.request.parameters !== undefined">
@@ -150,7 +150,7 @@ onMounted(async () => {
             </template>
             <h4>响应信息</h4>
             <p class="muted">HTTP {{ detail.request.status }} {{ detail.request.statusText }}<span v-if="detail.request.responseType"> · {{ detail.request.responseType }}</span><span v-if="detail.request.responseBytes !== undefined"> · {{ bytes(detail.request.responseBytes) }}</span></p>
-            <h4>响应 Header（已脱敏）<span v-if="detail.request.responseHeadersTruncated" class="muted"> · 内容较长，已截断</span></h4>
+            <h4>响应 Header<span v-if="detail.request.responseHeadersTruncated" class="muted"> · 内容较长，已截断</span></h4>
             <pre v-if="detail.request.responseHeaders !== undefined" class="result">{{ detail.request.responseHeaders }}</pre>
             <p v-else class="muted">旧日志未记录响应 Header。</p>
             <h4>响应正文预览<span v-if="detail.request.responseBodyTruncated" class="muted"> · 内容较长，已截断</span></h4>
@@ -171,7 +171,7 @@ onMounted(async () => {
                 <div v-if="detail.request.api.syncAt"><dt>快照同步时间</dt><dd>{{ formatTime(detail.request.api.syncAt) }}</dd></div>
               </dl>
             </el-collapse-item></el-collapse>
-            <p class="muted">请求地址、参数、Header 和正文各保留最多 8 KiB 的脱敏预览。SSE 流内失败时 HTTP 状态仍可能为 200，请结合调用结果和结束状态判断。</p>
+            <p class="muted">请求地址、参数、Header 和正文各保留最多 8 KiB 的预览。SSE 流内失败时 HTTP 状态仍可能为 200，请结合调用结果和结束状态判断。</p>
           </template>
           <el-empty v-else description="旧日志未记录请求参数，升级后的新调用会显示在这里" />
         </el-tab-pane>

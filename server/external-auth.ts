@@ -3,7 +3,7 @@ import { bad, HttpError, unauthorized } from './errors.ts'
 import { body as object, choice, integer, list, NAME, text } from './input.ts'
 import { isObject, parse, stringify, type Json, type JsonObject } from './json.ts'
 import { convert, FIELD_TYPES, identity, type FieldType } from './values.ts'
-import { AUTH_PREVIEW_BYTES, authRedactor, readAuthResponse, transportDetail, type ExternalAuthTrace } from './auth-diagnostics.ts'
+import { AUTH_PREVIEW_BYTES, authRedactor, plainDiagnostics, readAuthResponse, transportDetail, type ExternalAuthTrace } from './auth-diagnostics.ts'
 
 export const AUTH_PARAM_PREFIX = '_auth_'
 export const TEST_CREDENTIAL_HEADER = 'X-DataBridge-Test-Credential'
@@ -181,11 +181,11 @@ export class ExternalAuth {
   }
 
   async verify(config: ExternalAuthConfig | null, credential: string | undefined,
-    diagnostic?: (trace: ExternalAuthTrace) => void): Promise<QueryIdentity> {
+    diagnostic?: (trace: ExternalAuthTrace) => void, options: { redact?: boolean } = {}): Promise<QueryIdentity> {
     const started = performance.now()
     const trace: ExternalAuthTrace = { at: new Date().toISOString(), elapsedMs: 0, ok: false, error: null, detail: null,
-      request: null, response: null, checks: [] }
-    const redact = authRedactor(config, credential)
+      request: null, response: null, checks: [], redacted: options.redact !== false }
+    const preview = trace.redacted ? authRedactor(config, credential) : plainDiagnostics
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     let active = false
@@ -231,17 +231,17 @@ export class ExternalAuth {
         }
       }
       if (diagnostic) {
-        const safeHeaders = redact.headers(headers, true)
-        const safeBody = requestBody === undefined ? null : redact.body(requestBody, headers.get('Content-Type') ?? '')
-        trace.request = { method: config.method, url: redact.url(url.toString()), headers: safeHeaders,
-          body: safeBody?.text ?? null, truncated: safeBody?.truncated ?? false }
+        const requestHeaders = preview.headers(headers, true)
+        const requestPreview = requestBody === undefined ? null : preview.body(requestBody, headers.get('Content-Type') ?? '')
+        trace.request = { method: config.method, url: preview.url(url.toString()), headers: requestHeaders,
+          body: requestPreview?.text ?? null, truncated: requestPreview?.truncated ?? false }
       }
       response = await fetch(url, {
         method: config.method, headers, body: requestBody,
         redirect: 'manual', // Record the redirect response without forwarding credentials.
         signal: controller.signal,
       })
-      trace.response = { status: response.status, statusText: redact.text(response.statusText), headers: diagnostic ? redact.headers(response.headers) : {},
+      trace.response = { status: response.status, statusText: preview.text(response.statusText), headers: diagnostic ? preview.headers(response.headers) : {},
         body: null, truncated: false }
       const conditions = [
         ...(config.successPath ? [{ path: config.successPath, value: config.successValue }] : []),
@@ -256,12 +256,12 @@ export class ExternalAuth {
           raw = content.text
           oversized ||= content.truncated
           if (diagnostic) {
-            const preview = redact.body(raw, response.headers.get('Content-Type') ?? '')
-            trace.response.body = preview.text
-            trace.response.truncated = content.truncated || preview.truncated
+            const responsePreview = preview.body(raw, response.headers.get('Content-Type') ?? '')
+            trace.response.body = responsePreview.text
+            trace.response.truncated = content.truncated || responsePreview.truncated
           }
         } catch (error) {
-          trace.detail = redact.text(`验证服务响应体读取失败：${transportDetail(error)}`)
+          trace.detail = preview.text(`验证服务响应体读取失败：${transportDetail(error)}`)
           // Diagnostics must not change HTTP-only verification or a known rejection.
           if (needsJson) throw error
         }
@@ -288,8 +288,8 @@ export class ExternalAuth {
       }
       if (diagnostic) trace.checks = conditions.map(condition => {
         const actual = readPath(result, condition.path)
-        return { path: condition.path, expected: redact.json(condition.value, condition.path),
-          actual: actual === undefined ? null : redact.json(actual, condition.path), exists: actual !== undefined,
+        return { path: condition.path, expected: preview.json(condition.value, condition.path),
+          actual: actual === undefined ? null : preview.json(actual, condition.path), exists: actual !== undefined,
           matched: actual !== undefined && identity(actual) === identity(condition.value) }
       })
       for (const condition of conditions) {
@@ -325,7 +325,7 @@ export class ExternalAuth {
       trace.error = failure.message
       if (failure.status === 504) trace.detail = `验证请求在 ${config?.timeoutSeconds} 秒内未完成`
       else if (!trace.detail) trace.detail = error instanceof HttpError ? error.message : `验证服务连接或读取失败：${transportDetail(error)}`
-      trace.detail = redact.body(trace.detail).text
+      trace.detail = preview.body(trace.detail).text
       throw failure
     } finally {
       if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {})

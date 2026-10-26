@@ -82,7 +82,7 @@ test('stats require an administrator and report empty, successful and rejected c
   } finally { await f.close() }
 })
 
-test('call previews redact credentials and preserve exact numeric values and repeated query parameters', async () => {
+test('call previews retain original values, exact numbers and repeated query parameters', async () => {
   const f = fixture()
   try {
     const api = f.apis.save(undefined, definition)
@@ -97,21 +97,27 @@ test('call previews redact credentials and preserve exact numeric values and rep
     assert.deepEqual(JSON.parse(trace.query).q, ['one', 'two'])
     assert.match(trace.url!, /^https:\/\/bridge\.example\.invalid\/open\/request-logs\?/)
     assert.deepEqual(new URL(trace.url!).searchParams.getAll('q'), ['one', 'two'])
-    assert.equal(new URL(trace.url!).searchParams.get('ticket'), '[REDACTED]')
+    assert.equal(new URL(trace.url!).searchParams.get('ticket'), 'hidden-ticket')
     assert.match(trace.body!, /9007199254740993/)
     assert.match(trace.body!, /1\.10/)
     assert.equal(JSON.parse(trace.headers)['user-agent'], 'SyntheticClient/1')
-    assert.equal(JSON.parse(trace.headers)['x-custom-ticket'], '[REDACTED]')
-    assert.doesNotMatch(JSON.stringify(trace), /hidden-ticket|hidden-password|hidden-key|synthetic-user-ticket|synthetic-bare-key|synthetic-cookie|synthetic-api-key|synthetic-service-secret/)
+    assert.equal(JSON.parse(trace.headers)['x-custom-ticket'], 'Bearer synthetic-user-ticket')
+    assert.equal(JSON.parse(trace.headers).authorization, 'Bearer synthetic-bare-key')
+    assert.equal(JSON.parse(trace.headers).cookie, 'session=synthetic-cookie')
+    assert.equal(JSON.parse(trace.body!).nested.password, 'hidden-password')
+    assert.equal(JSON.parse(trace.body!).serviceAlias, 'synthetic-service-secret')
+    assert.doesNotMatch(JSON.stringify(trace), /\[REDACTED\]/)
     const numeric = callDiagnostics(new Request('https://bridge.example.invalid/open/request-logs', {
       method: 'POST', headers: { 'X-Custom-Ticket': '9007199254740993' },
     }), api)
     numeric.captureBody('{"alias":9007199254740993,"ordinaryNumber":7}')
-    assert.deepEqual(JSON.parse(numeric.trace.body!), { alias: '[REDACTED]', ordinaryNumber: 7 })
+    assert.match(numeric.trace.body!, /"alias": 9007199254740993/)
+    assert.equal(JSON.parse(numeric.trace.body!).ordinaryNumber, 7)
+    assert.doesNotMatch(JSON.stringify(numeric.trace), /\[REDACTED\]/)
   } finally { await f.close() }
 })
 
-test('previews remain bounded in UTF-8 and malformed JSON is omitted without retaining secrets', () => {
+test('previews remain bounded in UTF-8 and malformed JSON retains its original text', () => {
   const diagnostic = callDiagnostics(new Request('https://bridge.example.invalid/open/test?q=' + '长'.repeat(5000), {
     method: 'POST', headers: { 'User-Agent': '长'.repeat(5000).replaceAll('长', 'abc') },
   }))
@@ -125,9 +131,12 @@ test('previews remain bounded in UTF-8 and malformed JSON is omitted without ret
   assert.equal(diagnostic.trace.bodyTruncated, true)
   const malformed = callDiagnostics(new Request('https://bridge.example.invalid/open/test', { method: 'POST' }))
   malformed.captureBody('{"password": "hidden-malformed-secret')
-  assert.equal(malformed.trace.body, null)
+  assert.equal(malformed.trace.body, '{"password": "hidden-malformed-secret')
   assert.match(malformed.trace.bodyNote!, /不是有效的 JSON/)
-  assert.doesNotMatch(JSON.stringify(malformed.trace), /hidden-malformed-secret/)
+  malformed.captureBody('{"q":"' + '长'.repeat(5000))
+  assert.equal(malformed.trace.bodyTruncated, true)
+  assert.ok(Buffer.byteLength(malformed.trace.body!) <= 8192)
+  assert.ok(!malformed.trace.body!.endsWith('\uFFFD'))
 })
 
 test('GET, POST, rejected authorization and invalid parameters retain request details with actual status', async () => {
@@ -166,7 +175,7 @@ test('GET, POST, rejected authorization and invalid parameters retain request de
     assert.equal(last().status, 400)
     assert.equal(JSON.parse(last().body!).unknown, 'example')
     assert.equal((await f.app.request('/open/request-logs', { method: 'POST', body: '{"password":"never-persist' })).status, 400)
-    assert.equal(last().body, null)
+    assert.equal(last().body, '{"password":"never-persist')
     assert.match(last().bodyNote!, /不是有效的 JSON/)
     f.apis.save(api.id, { ...definition, method: 'POST', auth: 'API_KEY', version: f.apis.get(api.id).version })
     response = await f.app.request('/open/request-logs', { method: 'POST', headers: { 'X-API-Key': 'invalid-synthetic-key' }, body: '{"q":"query-one","alias":"invalid-synthetic-key"}' })
@@ -177,7 +186,8 @@ test('GET, POST, rejected authorization and invalid parameters retain request de
     assert.deepEqual(JSON.parse(last().responseBody!), await response.json())
     assert.deepEqual(JSON.parse(last().responseHeaders!), Object.fromEntries(response.headers))
     assert.equal(JSON.parse(last().body!).q, 'query-one')
-    assert.doesNotMatch(JSON.stringify(last()), /invalid-synthetic-key/)
+    assert.equal(JSON.parse(last().headers)['x-api-key'], 'invalid-synthetic-key')
+    assert.equal(JSON.parse(last().body!).alias, 'invalid-synthetic-key')
     response = await f.app.request('/open/missing?q=missing-input')
     assert.equal(response.status, 404)
     assert.equal(last().status, 404)
@@ -187,7 +197,9 @@ test('GET, POST, rejected authorization and invalid parameters retain request de
     assert.equal(JSON.parse(last().responseBody!).code, 40401)
     assert.equal(f.logs.list({}).items[0].apiId, null)
     const stored = JSON.stringify(f.db.prepare('SELECT detail FROM request_detail_log').all())
-    assert.doesNotMatch(stored, /invalid-synthetic-key|never-persist/)
+    assert.match(stored, /invalid-synthetic-key/)
+    assert.match(stored, /never-persist/)
+    assert.doesNotMatch(stored, /\[REDACTED\]/)
     assert.doesNotMatch(JSON.stringify(f.logs.list({})), /query-one|missing-input|9007199254740993/)
   } finally { await f.close() }
 })
@@ -241,7 +253,7 @@ test('v1.2.1 logs upgrade without losing summaries and remain explicitly without
 })
 
 
-test('response previews preserve exact numbers, redact cross-field copies and bound every stored preview', () => {
+test('response previews preserve exact numbers and cross-field copies and bound every stored preview', () => {
   const diagnostic = callDiagnostics(new Request('https://bridge.example.invalid/open/test?alias=request-secret', {
     method: 'POST', headers: { 'X-Alias': 'request-secret' },
   }))
@@ -252,9 +264,14 @@ test('response previews preserve exact numbers, redact cross-field copies and bo
   } }))
   assert.match(diagnostic.trace.responseBody!, /9007199254740993/)
   assert.match(diagnostic.trace.responseBody!, /1\.10/)
-  assert.doesNotMatch(JSON.stringify(diagnostic.trace), /request-secret|response-secret|nested-secret|response-cookie/)
+  assert.match(diagnostic.trace.responseBody!, /response-secret/)
+  assert.match(diagnostic.trace.responseBody!, /nested-secret/)
+  assert.equal(JSON.parse(diagnostic.trace.body!).password, 'request-secret')
+  assert.equal(JSON.parse(diagnostic.trace.headers)['x-alias'], 'request-secret')
+  assert.equal(new URL(diagnostic.trace.url!).searchParams.get('alias'), 'request-secret')
+  assert.doesNotMatch(JSON.stringify(diagnostic.trace), /\[REDACTED\]/)
   assert.equal(diagnostic.trace.responseBodyTruncated, true)
-  assert.equal(JSON.parse(diagnostic.trace.responseHeaders!)['set-cookie'], '[REDACTED]')
+  assert.equal(JSON.parse(diagnostic.trace.responseHeaders!)['set-cookie'], 'session=response-cookie; HttpOnly')
   for (const key of ['url','query','headers','body','responseHeaders','responseBody'] as const) {
     assert.ok(Buffer.byteLength(diagnostic.trace[key]!) <= 8192)
     assert.ok(!diagnostic.trace[key]!.endsWith('\uFFFD'))

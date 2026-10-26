@@ -14,7 +14,7 @@ function body(value: string | null) {
   <div class="auth-trace">
     <el-alert :title="trace.ok ? '身份验证通过' : trace.error || '身份验证失败'" :type="trace.ok ? 'success' : 'error'"
               :description="trace.detail || undefined" :closable="false" show-icon />
-    <div class="muted trace-meta">{{ formatTime(trace.at) }} · 验证耗时 {{ trace.elapsedMs }} ms · 凭证、密码和签名摘要已脱敏</div>
+    <div class="muted trace-meta">{{ formatTime(trace.at) }} · 验证耗时 {{ trace.elapsedMs }} ms<span v-if="trace.redacted !== false"> · 凭证、密码和签名摘要已脱敏</span></div>
     <template v-if="trace.request">
       <h4>DataBridge → 外部身份服务：实际验证请求</h4>
       <pre class="result">{{ trace.request.method }} {{ trace.request.url }}</pre>

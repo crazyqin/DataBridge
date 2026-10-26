@@ -2,6 +2,7 @@ import { isObject, parse, type Json } from './json.ts'
 import type { AuthHeaderValue, ExternalAuthConfig } from './external-auth.ts'
 
 export interface ExternalAuthTrace {
+  redacted?: boolean
   at: string
   elapsedMs: number
   ok: boolean
@@ -15,6 +16,23 @@ export interface ExternalAuthTrace {
 export const AUTH_PREVIEW_BYTES = 8192
 const REDACTED = '[REDACTED]'
 const sensitive = (name: string) => /authorization|cookie|token|secret|password|passwd|credential|digest|signature|(?:api|service)[_-]?key/i.test(name)
+
+export function diagnosticPreview(value: string): { text: string; truncated: boolean } {
+  const bytes = Buffer.from(value)
+  return { text: new TextDecoder().decode(bytes.subarray(0, AUTH_PREVIEW_BYTES), { stream: true }), truncated: bytes.length > AUTH_PREVIEW_BYTES }
+}
+
+/** Call logs retain original values; only preview length and JSON formatting change. */
+export const plainDiagnostics = {
+  text: (value: string) => value,
+  json: (value: Json, _name = '') => value,
+  url: (value: string) => value,
+  headers: (values: Headers, _request = false) => Object.fromEntries(values),
+  body(value: string, _contentType = '') {
+    try { value = JSON.stringify(parse(value), null, 2) } catch { /* Retain non-JSON content as received. */ }
+    return diagnosticPreview(value)
+  },
+}
 
 /** Redact before truncating or persisting; opaque configured signing values are never logged. */
 export function authRedactor(config: ExternalAuthConfig | null, credential?: string, extraSecrets: string[] = []) {
@@ -104,8 +122,7 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
     } else {
       try { safe = JSON.stringify(json(parse(value)), null, 2) } catch { safe = text(value) }
     }
-    const bytes = Buffer.from(safe)
-    return { text: new TextDecoder().decode(bytes.subarray(0, AUTH_PREVIEW_BYTES), { stream: true }), truncated: bytes.length > AUTH_PREVIEW_BYTES }
+    return diagnosticPreview(safe)
   }
   return { text, json, url, headers, body, remember: (value: Json) => collect(value) }
 }

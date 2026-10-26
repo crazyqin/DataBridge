@@ -25,6 +25,7 @@ export const defaultExternalAuth = (): ExternalAuthConfig => ({
 })
 
 export interface ExternalAuthTrace {
+  redacted?: boolean
   at: string; elapsedMs: number; ok: boolean; error: string | null; detail: string | null
   request: { method: string; url: string; headers: Record<string, string>; body: string | null; truncated: boolean } | null
   response: { status: number; statusText: string; headers: Record<string, string>; body: string | null; truncated: boolean } | null

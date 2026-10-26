@@ -342,7 +342,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       if (api.auth === 'EXTERNAL') diagnostic.stage('identity')
       const identity = api.auth === 'EXTERNAL'
         ? await externalAuth.verify(apis.identityConfig(api), api.externalAuth ? c.req.header(api.externalAuth.inputHeader) : undefined,
-          trace => { externalAuthTrace = trace }) : undefined
+          trace => { externalAuthTrace = trace }, { redact: false }) : undefined
       diagnostic.stage(api.mode === 'XINGCHEN' ? 'forward' : 'query')
       const input: JsonObject = api.method === 'GET' ? c.req.query() : await readJson(c)
       if (api.mode === 'XINGCHEN') {
