@@ -19,6 +19,7 @@ import type { Sources } from './sources.ts'
 import { ExternalAuth, TEST_CREDENTIAL_HEADER, validateExternalAuth } from './external-auth.ts'
 import type { ExternalAuthTrace } from './auth-diagnostics.ts'
 import { Xingchen } from './xingchen.ts'
+import { DataSkill } from './dataskill.ts'
 import { callDiagnostics } from './request-diagnostics.ts'
 
 type Env = { Variables: { requestId: string; user: string; externalAuthTrace: ExternalAuthTrace | undefined;
@@ -56,6 +57,7 @@ function withDetail(error: unknown): never {
 export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   const app = new Hono<Env>()
   const externalAuth = new ExternalAuth(config.maxConcurrentQueries)
+  const dataskill = new DataSkill(config, apis.connections, externalAuth)
   const xingchen = new Xingchen(config.maxConcurrentQueries)
   let activeQueries = 0
 
@@ -171,9 +173,9 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   // ---- shared connections ----
 
   app.get('/admin/connections', c => admin(c, apis.connections.list()))
-  app.get('/admin/connections/:id', c => admin(c, apis.connections.get(id(c.req.param('id')))))
-  app.post('/admin/connections', async c => admin(c, apis.connections.save(undefined, await readJson(c)), 201))
-  app.put('/admin/connections/:id', async c => admin(c, apis.connections.save(id(c.req.param('id')), await readJson(c))))
+  app.get('/admin/connections/:id', c => admin(c, apis.connections.publicView(apis.connections.get(id(c.req.param('id'))))))
+  app.post('/admin/connections', async c => admin(c, apis.connections.publicView(apis.connections.save(undefined, await readJson(c))), 201))
+  app.put('/admin/connections/:id', async c => admin(c, apis.connections.publicView(apis.connections.save(id(c.req.param('id')), await readJson(c)))))
   app.delete('/admin/connections/:id', c => {
     apis.connections.remove(id(c.req.param('id')))
     return c.body(null, 204)
@@ -309,6 +311,16 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     if (sizeKey) delete params[sizeKey]
     return { input: params, page, pageSize }
   }
+
+  app.all('/open/dataskill/*', async c => {
+    const started = performance.now()
+    c.set('completeCall', response => {
+      logs.write({ requestId: c.get('requestId'), at: now(), apiId: null, mode: 'DATASKILL',
+        elapsedMs: performance.now() - started, rowCount: 0, ok: response.ok,
+        error: response.ok ? null : `HTTP ${response.status}` })
+    })
+    return dataskill.forward(c.req.raw, c.get('requestId'))
+  })
 
   app.all('/open/*', async c => {
     const started = performance.now()

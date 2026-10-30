@@ -73,15 +73,21 @@ export const defaultXingchen = (): XingchenConfig => ({
   inputMappings: [{ parameter: 'q', variable: 'q' }], queryParam: 'q', conversationParam: 'conversation_id', responseMode: 'blocking',
 })
 
-export type ConnectionKind = 'EXTERNAL_AUTH' | 'XINGCHEN'
+export type ConnectionKind = 'EXTERNAL_AUTH' | 'XINGCHEN' | 'DATASKILL'
+export interface DataSkillConfig {
+  baseUrl: string; serviceToken: string; authConnectionId: number | null
+  staffCodeBinding: string; identityProvider: string; enabled: boolean
+}
 export interface ConnectionSummary {
   id: number; kind: ConnectionKind; name: string; version: number; createdAt: string; updatedAt: string
   usedBy: { id: number; name: string }[]; bindings: ExternalAuthConfig['bindings']; inputHeader: string; inputPrefix: string
+  usedByConnections: { id: number; name: string }[]; activeIntegration: boolean
 }
 export interface Connection extends Omit<ConnectionSummary, 'bindings' | 'inputHeader' | 'inputPrefix'> {
-  config: ExternalAuthConfig | { baseUrl: string }
+  config: ExternalAuthConfig | { baseUrl: string } | DataSkillConfig
+  hasServiceToken?: boolean; serviceTokenSha256?: string
 }
-export const CONNECTION_LABELS: Record<ConnectionKind, string> = { EXTERNAL_AUTH: '身份服务', XINGCHEN: '星辰平台' }
+export const CONNECTION_LABELS: Record<ConnectionKind, string> = { EXTERNAL_AUTH: '身份服务', XINGCHEN: '星辰平台', DATASKILL: 'DataSkill Studio' }
 
 export interface Project {
   id: number; name: string; description: string; version: number; apiCount: number

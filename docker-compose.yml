@@ -1,7 +1,11 @@
 services:
   databridge:
-    image: databridge:1.3.1
-    build: .
+    image: databridge:1.4.1
+    build:
+      context: .
+      args:
+        DATABRIDGE_VERSION: 1.4.1
+        DATABRIDGE_BUILD_COMMIT: ${DATABRIDGE_BUILD_COMMIT:-unknown}
     platform: linux/amd64
     restart: unless-stopped
     ports:

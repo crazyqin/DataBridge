@@ -4,7 +4,7 @@
 
 - **一个进程、一个数据卷**：Node.js 运行服务，平台数据存在内嵌的 SQLite，不需要额外数据库。
 - **四种接口模式**：实时查询、定时同步快照、手工维护、星辰智能体转发。
-- **共享连接**：身份验证配置和星辰基础地址集中维护，多个接口直接选用。
+- **共享连接**：身份验证、星辰平台和 DataSkill Studio 集中维护，配置加密保存。
 - **数据不失真**：大整数、`numeric` 精度、时间的小数秒和时区都原样输出。
 
 ## 部署
@@ -22,16 +22,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.3.1 .
+docker build --platform linux/amd64 -t databridge:1.4.1 .
 mkdir -p release
-docker save databridge:1.3.1 | gzip > release/databridge-1.3.1-amd64.tar.gz
+docker save databridge:1.4.1 | gzip > release/databridge-1.4.1-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.3.1-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.4.1-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.3.1` |
+| Image | `databridge:1.4.1` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -57,11 +57,11 @@ cat /data/initial-admin-password
 | `PORT` | `8080` | 监听端口 |
 | `DATA_DIR` | `./data`（镜像内为 `/data`） | SQLite 数据库、密钥和初始密码所在目录 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / 随机 | 只在首次启动时使用 |
-| `APP_SECRET_KEY` | 自动生成到 `DATA_DIR/secret.key` | 加密数据源密码、身份验证及星辰配置的 AES-256 密钥，Base64 编码的 32 字节 |
+| `APP_SECRET_KEY` | 自动生成到 `DATA_DIR/secret.key` | 加密数据源密码和所有共享连接配置的 AES-256 密钥，Base64 编码的 32 字节 |
 | `TRUST_PROXY` | `false` | 位于反向代理之后时设为 `true`：用 `X-Forwarded-For` 做登录限流，按 `X-Forwarded-Proto` 设置 Secure Cookie 和 HSTS |
 | `COOKIE_SECURE` | `auto` | 设为 `true` 或 `false` 时，强制开启或关闭 Secure Cookie |
 | `LOG_RETENTION_DAYS` | `30` | 调用日志和同步详情保留天数 |
-| `MAX_CONCURRENT_QUERIES` | `20` | 实时查询、外部验证、星辰转发各自的并发上限，超出返回 503 |
+| `MAX_CONCURRENT_QUERIES` | `20` | 实时查询、外部验证、星辰转发及 Studio 转发各自的并发上限，超出返回 503 |
 
 ## 连接管理与工作台
 
@@ -71,6 +71,7 @@ cat /data/initial-admin-password
 
 - **身份服务**：集中保存凭证传递方式、验证地址、签名、成功条件和身份字段映射。
 - **星辰平台**：集中保存包含 `/v1` 的基础地址；应用 ID、API Key 和 SM2 公钥仍由各接口单独维护。
+- **DataSkill Studio**：集中保存 Studio 地址、服务凭据、UAP 连接和工号映射，启用后提供固定的 `/open/dataskill/*` 入口，无需另建业务 API。
 
 创建接口时只需选择连接。只有一个可选连接时自动选中；也可在接口表单中打开抽屉新建或编辑连接，已填写的业务配置会保留。接口编辑按「基本设置 → 业务配置 → 测试发布」组织，高级选项折叠，保存时可选择草稿或启用。「保存并启用」成功后自动返回列表并刷新，保留当前项目和筛选条件；保存草稿时留在编辑页，方便继续配置和测试，保存失败时也会保留当前表单。
 
@@ -81,6 +82,29 @@ cat /data/initial-admin-password
 升级时自动把旧 API 内的身份验证配置和星辰地址转为共享连接：相同平台地址合并；验证设置相同且身份字段兼容时合并，字段冲突则分别保留。接口路径、启用状态及应用凭据不变。迁移在事务中执行，失败会回滚并停止启动，修复后可重试。配置整体加密保存，包括内部地址；列表只返回名称、引用关系和必要的身份字段元数据。
 
 管理接口提供 `/admin/connections` 的列表/创建及 `/admin/connections/:id` 的读取/更新/删除。保存 API 时用 `authConnectionId` 和 `xingchenConnectionId` 引用连接；传入引用后以共享配置为准。旧管理客户端仍可提交内嵌配置，系统自动归入连接。`GET /admin/apis` 不再返回身份验证和星辰的完整敏感配置；编辑时使用 `GET /admin/apis/:id` 读取详情。
+
+## DataSkill Studio 反馈与 Skill 更新
+
+在「配置中心 → 连接管理 → 新建 DataSkill Studio」配置，和身份服务、星辰平台统一管理。
+
+1. 先创建 UAP 身份服务，设置验证地址、成功条件和调用者凭据 Header；将返回的工号映射为 **string**（例如 `data.staffCode → _auth_staff_code`），保留前导零。
+2. 新建 Studio 连接，填写 Studio 根地址（不含 `/api`）、服务凭据、UAP 连接、工号映射和身份服务标识（默认 `uap`）。页面可以生成随机服务凭据。
+3. 保存后重新打开连接，将「已保存服务凭据的 SHA-256」配置到 Studio 端的 `DATASKILL_DATABRIDGE_TOKEN_SHA256`；Studio 的 `DATASKILL_DATABRIDGE_IDENTITY_PROVIDER` 应与页面的身份服务标识一致。Studio 账号的**用户名就是工号**，须预先创建并启用。
+4. 打开「启用反馈入口」并保存。修改后后续请求立即生效，无需重启。每次只能启用一个 Studio 连接，可保存多个停用配置。删除前先停用；被 Studio 引用的 UAP 连接及其工号字段受引用保护。
+
+地址、凭据和映射随其他连接一起加密保存在原 `/data` 卷。服务凭据不会从管理 API 返回；编辑时留空保留原值，填写新值则替换。替换服务凭据时同步更新 Studio 端的 SHA-256。
+
+**DataBridge 不再使用 Studio 集成的环境变量，也不做兼容或自动导入。** 从旧环境变量版本升级后，入口保持关闭，需按上述步骤在页面创建并启用连接。原有用户、API、其他连接和数据不受影响，继续挂载原数据卷即可自动升级。
+
+| 方法 | 入口 | 用途 |
+| --- | --- | --- |
+| POST | `/open/dataskill/feedback` | 提交用户确认任务结束且数据正确的上下文与最终 SQL |
+| GET | `/open/dataskill/feedback/{id}` | 查看自己的反馈状态 |
+| POST | `/open/dataskill/feedback/{id}/withdraw` | 撤回自己的反馈 |
+| POST | `/open/dataskill/skill-check` | 检查 Skill 发布与版本 |
+| GET | `/open/dataskill/skill-download/{release_id}` | 下载已授权的 stable Skill |
+
+Skill 使用连接所选 UAP 的个人凭据 Header 调用上述入口。DataBridge 每次验证身份，注入工号和身份服务标识，再用专用服务凭据连接 Studio；调用者不能自行指定身份。任务内容和 SQL 不进入通用调用日志，仅记录状态、耗时等元数据。未经确认的任务不会成为反馈，知识是否采纳与发布由 Studio 审核流程决定。
 
 ## 按项目整理接口
 

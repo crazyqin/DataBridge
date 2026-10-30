@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { decrypt, encrypt, type Config } from './config.ts'
 import { now, transaction, type Db } from './db.ts'
 import { bad, conflict, notFound } from './errors.ts'
@@ -7,12 +8,15 @@ import { parse, stringify, type Json, type JsonObject } from './json.ts'
 import { parseSql } from './sql.ts'
 import { identity } from './values.ts'
 import { validatePlatform } from './xingchen.ts'
+import { validateDataSkill, type DataSkillConfig } from './dataskill-config.ts'
 
-export type ConnectionKind = 'EXTERNAL_AUTH' | 'XINGCHEN'
-export type ConnectionConfig = ExternalAuthConfig | { baseUrl: string }
+export type ConnectionKind = 'EXTERNAL_AUTH' | 'XINGCHEN' | 'DATASKILL'
+export type ConnectionConfig = ExternalAuthConfig | { baseUrl: string } | DataSkillConfig
 export interface Connection {
   id: number; kind: ConnectionKind; name: string; config: ConnectionConfig; version: number
   createdAt: string; updatedAt: string; usedBy: { id: number; name: string }[]
+  usedByConnections: { id: number; name: string }[]
+  activeIntegration: boolean
 }
 interface StoredConnection {
   id: number; kind: ConnectionKind; name: string; config: string; version: number; created_at: string; updated_at: string
@@ -24,9 +28,19 @@ export class Connections {
   private readonly config: Config
   constructor(db: Db, config: Config) { this.db = db; this.config = config }
 
+  private studioConnections() {
+    const rows = this.db.prepare("SELECT id, name, config FROM connection WHERE kind = 'DATASKILL' ORDER BY id").all() as
+      { id: number; name: string; config: string }[]
+    return rows.map(row => ({ id: row.id, name: row.name,
+      config: parse(decrypt(this.config.secretKey, row.config)) as unknown as DataSkillConfig }))
+  }
+
   private decode(row: StoredConnection): Connection {
-    return { id: row.id, kind: row.kind, name: row.name, version: row.version,
-      config: parse(decrypt(this.config.secretKey, row.config)) as unknown as ConnectionConfig,
+    const config = parse(decrypt(this.config.secretKey, row.config)) as unknown as ConnectionConfig
+    return { id: row.id, kind: row.kind, name: row.name, version: row.version, config,
+      activeIntegration: row.kind === 'DATASKILL' && (config as DataSkillConfig).enabled,
+      usedByConnections: row.kind === 'EXTERNAL_AUTH'
+        ? this.studioConnections().filter(c => c.config.authConnectionId === row.id).map(({ id, name }) => ({ id, name })) : [],
       createdAt: row.created_at, updatedAt: row.updated_at,
       usedBy: this.db.prepare('SELECT id, name FROM api WHERE auth_connection_id = ? OR xingchen_connection_id = ? ORDER BY id')
         .all(row.id, row.id) as { id: number; name: string }[] }
@@ -49,11 +63,38 @@ export class Connections {
   auth(id: number): ExternalAuthConfig { return this.get(id, 'EXTERNAL_AUTH').config as ExternalAuthConfig }
   platform(id: number): { baseUrl: string } { return this.get(id, 'XINGCHEN').config as { baseUrl: string } }
 
+  dataSkill(): DataSkillConfig | undefined {
+    const active = this.studioConnections().filter(c => c.config.enabled)
+    if (active.length > 1) throw conflict('只能启用一个 DataSkill Studio 连接')
+    return active[0]?.config
+  }
+
+  publicView(connection: Connection) {
+    if (connection.kind !== 'DATASKILL') return connection
+    const { serviceToken, ...config } = connection.config as DataSkillConfig
+    return { ...connection, config: { ...config, serviceToken: '' },
+      hasServiceToken: !!serviceToken, serviceTokenSha256: createHash('sha256').update(serviceToken).digest('hex') }
+  }
+
   save(id: number | undefined, input: JsonObject): Connection {
-    const kind = choice(input, 'kind', '连接类型', ['EXTERNAL_AUTH', 'XINGCHEN'] as const)
+    const kind = choice(input, 'kind', '连接类型', ['EXTERNAL_AUTH', 'XINGCHEN', 'DATASKILL'] as const)
     const name = text(input, 'name', '连接名称', { max: 100 })
-    const config = kind === 'EXTERNAL_AUTH' ? validateExternalAuth(input.config) : validatePlatform(input.config)
     return transaction(this.db, () => {
+      const current = id === undefined ? undefined : this.get(id)
+      if (current && current.kind !== kind) throw bad('已有连接不能改变类型')
+      if (current && integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER) !== current.version) throw conflict('连接已被修改，请重新载入')
+      const config = kind === 'EXTERNAL_AUTH' ? validateExternalAuth(input.config)
+        : kind === 'XINGCHEN' ? validatePlatform(input.config)
+        : validateDataSkill(input.config, current?.config as DataSkillConfig | undefined)
+      if (kind === 'DATASKILL') {
+        const studio = config as DataSkillConfig
+        if (!this.auth(studio.authConnectionId).bindings.some(b => b.name === studio.staffCodeBinding && b.type === 'string')) {
+          throw bad('工号必须选择 UAP 身份服务中 string 类型的映射')
+        }
+        if (studio.enabled && this.studioConnections().some(c => c.id !== id && c.config.enabled)) {
+          throw conflict('已有启用的 DataSkill Studio 连接，请先停用原连接')
+        }
+      }
       if (this.db.prepare('SELECT 1 FROM connection WHERE name = ? AND id IS NOT ?').get(name, id ?? null)) throw conflict('连接名称已存在')
       const at = now()
       const encoded = encrypt(this.config.secretKey, stringify(config))
@@ -62,10 +103,7 @@ export class Connections {
           .run(kind, name, encoded, at, at)
         return this.get(Number(result.lastInsertRowid))
       }
-      const current = this.get(id)
-      if (current.kind !== kind) throw bad('已有连接不能改变类型')
-      if (integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER) !== current.version) throw conflict('连接已被修改，请重新载入')
-      if (kind === 'EXTERNAL_AUTH') this.checkBindings(id, current.config as ExternalAuthConfig, config as ExternalAuthConfig)
+      if (kind === 'EXTERNAL_AUTH') this.checkBindings(id, current!.config as ExternalAuthConfig, config as ExternalAuthConfig)
       this.db.prepare('UPDATE connection SET name = ?, config = ?, version = version + 1, updated_at = ? WHERE id = ?')
         .run(name, encoded, at, id)
       return this.get(id)
@@ -73,6 +111,11 @@ export class Connections {
   }
 
   private checkBindings(id: number, previous: ExternalAuthConfig, next: ExternalAuthConfig) {
+    for (const studio of this.studioConnections().filter(c => c.config.authConnectionId === id)) {
+      if (!next.bindings.some(b => b.name === studio.config.staffCodeBinding && b.type === 'string')) {
+        throw conflict(`工号映射正在被 DataSkill Studio 连接「${studio.name}」使用，不能删除或修改类型`)
+      }
+    }
     const used = this.db.prepare('SELECT mode, sql_text, xingchen FROM api WHERE auth_connection_id = ?').all(id) as
       { mode: string; sql_text: string | null; xingchen: string | null }[]
     for (const api of used) {
@@ -87,12 +130,15 @@ export class Connections {
   }
 
   remove(id: number) {
-    if (this.get(id).usedBy.length) throw conflict('连接正在被 API 使用，请先更换这些 API 的连接')
+    const connection = this.get(id)
+    if (connection.activeIntegration) throw conflict('请先停用 DataSkill Studio 反馈入口，再删除连接')
+    if (connection.usedByConnections.length) throw conflict('连接正在被 DataSkill Studio 使用，请先更换身份服务连接')
+    if (connection.usedBy.length) throw conflict('连接正在被 API 使用，请先更换这些 API 的连接')
     this.db.prepare('DELETE FROM connection WHERE id = ?').run(id)
   }
 
   /** Used inside the API save/migration transaction; identical verifier settings share one connection. */
-  reuse(kind: ConnectionKind, config: ConnectionConfig): number {
+  reuse(kind: 'EXTERNAL_AUTH' | 'XINGCHEN', config: ExternalAuthConfig | { baseUrl: string }): number {
     const canonical = (value: unknown) => identity(value as Json)
     const rows = this.db.prepare('SELECT * FROM connection WHERE kind = ? ORDER BY id').all(kind) as unknown as StoredConnection[]
     for (const row of rows) {

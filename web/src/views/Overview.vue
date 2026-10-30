@@ -32,7 +32,7 @@ onMounted(load)
     <div class="page-head"><div><p class="eyebrow">WORKSPACE OVERVIEW</p><h2>工作台</h2><p>连接、接口与运行状态，集中查看。</p></div><div class="page-actions"><el-button :loading="loading" @click="load"><UiIcon v-if="!loading" name="refresh" />刷新</el-button><el-button type="primary" @click="emit('create')"><UiIcon name="plus" />创建接口</el-button></div></div>
     <div class="metric-grid">
       <button class="metric-card" @click="emit('navigate', 'apis')"><span class="metric-label">已启用接口<span class="metric-icon"><UiIcon name="apis" /></span></span><strong>{{ active }}<small>/ {{ apis.length }}</small></strong><em>查看全部接口<UiIcon name="arrow" /></em></button>
-      <button class="metric-card tone-violet" @click="emit('navigate', 'connections')"><span class="metric-label">共享连接<span class="metric-icon"><UiIcon name="connections" /></span></span><strong>{{ connections.length }}</strong><em>身份服务与星辰平台<UiIcon name="arrow" /></em></button>
+      <button class="metric-card tone-violet" @click="emit('navigate', 'connections')"><span class="metric-label">共享连接<span class="metric-icon"><UiIcon name="connections" /></span></span><strong>{{ connections.length }}</strong><em>身份服务、星辰与 Studio<UiIcon name="arrow" /></em></button>
       <button class="metric-card tone-sand" @click="emit('navigate', 'sources')"><span class="metric-label">数据库连接<span class="metric-icon"><UiIcon name="sources" /></span></span><strong>{{ sources.length }}</strong><em>管理数据源<UiIcon name="arrow" /></em></button>
       <button class="metric-card" :class="{ 'tone-rose': stats && stats.failed > 0 }" :disabled="!stats" :title="stats ? `${formatTime(stats.from)} 至 ${formatTime(stats.to)}` : undefined" @click="stats && emit('failures', { from: stats.from, to: stats.to })">
         <span class="metric-label">近 24 小时失败调用<span class="metric-icon"><UiIcon name="activity" /></span></span><strong :class="{ danger: stats && stats.failed > 0 }">{{ stats?.failed ?? '—' }}</strong>
@@ -43,7 +43,7 @@ onMounted(load)
     <section class="editor-section onboarding">
       <div class="section-heading"><h3>{{ apis.length ? '常用操作' : '从一个连接开始' }}</h3><span>连接只配置一次，多个 API 可直接选用</span></div>
       <div class="setup-grid">
-        <button class="setup-card" @click="emit('navigate', 'connections')"><span class="setup-icon"><UiIcon name="connections" /></span><div><strong>准备共享连接</strong><p>配置身份验证和星辰基础地址。</p><span class="setup-state">{{ ready ? '管理已有连接' : '添加第一个连接' }}<UiIcon name="arrow" /></span></div></button>
+        <button class="setup-card" @click="emit('navigate', 'connections')"><span class="setup-icon"><UiIcon name="connections" /></span><div><strong>准备共享连接</strong><p>配置身份服务、星辰或 DataSkill Studio。</p><span class="setup-state">{{ ready ? '管理已有连接' : '添加第一个连接' }}<UiIcon name="arrow" /></span></div></button>
         <button class="setup-card" @click="emit('create')"><span class="setup-icon"><UiIcon name="plus" /></span><div><strong>创建业务接口</strong><p>选择模式和连接，填写业务参数。</p><span class="setup-state">创建接口<UiIcon name="arrow" /></span></div></button>
         <button class="setup-card" @click="emit('navigate', 'logs')"><span class="setup-icon"><UiIcon name="logs" /></span><div><strong>测试与观察</strong><p>发布后通过日志查看调用结果。</p><span class="setup-state">查看运行记录<UiIcon name="arrow" /></span></div></button>
       </div>
