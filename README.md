@@ -22,33 +22,22 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 \
-  --build-arg DATABRIDGE_VERSION=1.4.0 \
-  --build-arg DATABRIDGE_BUILD_COMMIT="$(git rev-parse HEAD)" \
-  -t databridge:1.4.0 .
+docker build --platform linux/amd64 -t databridge:1.3.1 .
 mkdir -p release
-docker save databridge:1.4.0 | gzip > release/databridge-1.4.0-amd64.tar.gz
+docker save databridge:1.3.1 | gzip > release/databridge-1.3.1-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.4.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.3.1-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.4.0` |
+| Image | `databridge:1.3.1` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
 | Restart policy | `Unless stopped` |
 
 更新已有容器时继续挂载原来的 `/data` 卷。服务启动时会自动升级 SQLite 表结构；更新前可按下文的「备份与恢复」步骤备份数据卷。
-
-### 从旧镜像升级
-
-替换容器时保留原 `/data` 卷（或原宿主机目录），它同时包含 SQLite 数据库和 `secret.key`。启动会按数据库版本自动、事务化补齐旧迁移；本版反馈入口不改变既有业务表。保留原 `APP_SECRET_KEY`（如有配置）及运行环境，升级前备份整个数据目录。
-
-离线环境先 `docker load` 导入导出包，再把镜像改为 `databridge:1.4.0` 并重建容器。Compose 使用原项目名和原卷，执行 `docker compose up -d --no-build`；不要用 `down -v` 删除卷，也不要同时让两个版本写同一份 SQLite。旧接口可在未配置反馈集成的情况下继续使用。
-
-这里的自动升级指新镜像启动时迁移现有数据；镜像文件仍由使用人导入和切换。详细导出校验值与隔离升级测试结果随 release 文件提供。
 
 ### 首次登录
 
@@ -400,37 +389,3 @@ test/     node:test 测试
 ## License
 
 本项目基于 [MIT License](LICENSE) 开源。
-
-## DataSkill Studio 任务反馈集成
-
-该集成提供固定 HTTP 入口，无需创建新的 API 模式或额外 MCP。Skill 的本地脚本提交已确认任务，DataBridge 使用共享 UAP 连接验证个人令牌，并将可信工号注入 Studio 请求。Studio 用户名必须与工号精确一致，字符串前导零保留。
-
-在连接管理先配置外部身份服务，包含个人凭据 Header、成功条件和 string 工号映射（默认名称 `_auth_staff_code`；如 `data.staffCode` 的实际路径以 UAP 返回为准），然后设置服务环境变量并重启：
-
-| 变量 | 说明 |
-| --- | --- |
-| `DATASKILL_STUDIO_URL` | Studio 根地址，不含 `/api`；不配置则禁用集成 |
-| `DATASKILL_SERVICE_TOKEN` | 至少 32 字符的随机专用服务令牌，仅服务端保存 |
-| `DATASKILL_AUTH_CONNECTION_ID` | 上述 UAP 连接 ID |
-| `DATASKILL_STAFF_BINDING` | 工号映射名称，默认 `_auth_staff_code` |
-| `DATASKILL_IDENTITY_PROVIDER` | 身份服务标识，默认 `uap` |
-
-Studio 配置 `DATASKILL_DATABRIDGE_TOKEN_SHA256` 为服务令牌的 SHA-256 小写十六进制值、`DATASKILL_DATABRIDGE_IDENTITY_PROVIDER` 为同一 provider，并完成迁移和 Worker/真实 AI 配置。DataBridge 不向 Studio 传递个人 UAP 令牌。双方非本机连接使用 HTTPS。Compose 已透传以上变量；不要把服务令牌放进 Skill 或提交到仓库。
-
-| 入口 | 用途 |
-| --- | --- |
-| `POST /open/dataskill/feedback` | 接收已确认的任务包，上限 512 KiB |
-| `GET /open/dataskill/feedback/{id}` | 查看本人反馈状态摘要 |
-| `POST /open/dataskill/feedback/{id}/withdraw` | 撤回本人来源 |
-| `POST /open/dataskill/skill-check` | 认证身份、上报安装/加载版本、查询 stable 包 |
-| `GET /open/dataskill/skill-download/{release_id}` | 下载 stable ZIP |
-
-所有入口使用 UAP 共享连接配置的 Header 接收个人凭据。拒绝正文伪造身份、查询参数和任意转发地址。专用路由只记录状态、请求 ID 和耗时，不复制任务正文到通用诊断日志；Studio 服务授权故障返回网关 502，不误报为个人登录过期。集成引用的 UAP 连接及 string 工号字段受依赖保护。
-
-客户端命令及任务 JSON 由 Studio 生成的 Skill 中 `references/feedback.md` 说明。首次配置示例：
-
-```bash
-python3 scripts/studio_client.py configure --url https://bridge.example.invalid --token-env UAP_TOKEN --header Authorization --prefix 'Bearer '
-```
-
-替换为部署地址和实际个人凭据 Header；本地登录环境提供 `UAP_TOKEN`，命令只保存环境变量名。以两个试用账号验证“提交 → 人工审核 → 发布 → 另一台电脑安装并在新任务加载”，再扩展使用范围。自动测试使用模拟 UAP 和 Studio，不代表真实部署已经联调。

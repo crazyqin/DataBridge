@@ -73,10 +73,6 @@ export class Connections {
   }
 
   private checkBindings(id: number, previous: ExternalAuthConfig, next: ExternalAuthConfig) {
-    const integration = this.config.dataskill
-    if (integration?.authConnectionId === id && !next.bindings.some(b => b.name === integration.staffBinding && b.type === 'string')) {
-      throw conflict('工号映射正被 DataSkill 反馈使用，不能删除或修改类型')
-    }
     const used = this.db.prepare('SELECT mode, sql_text, xingchen FROM api WHERE auth_connection_id = ?').all(id) as
       { mode: string; sql_text: string | null; xingchen: string | null }[]
     for (const api of used) {
@@ -91,7 +87,6 @@ export class Connections {
   }
 
   remove(id: number) {
-    if (this.config.dataskill?.authConnectionId === id) throw conflict('连接正被 DataSkill 反馈集成使用')
     if (this.get(id).usedBy.length) throw conflict('连接正在被 API 使用，请先更换这些 API 的连接')
     this.db.prepare('DELETE FROM connection WHERE id = ?').run(id)
   }

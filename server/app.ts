@@ -19,7 +19,6 @@ import type { Sources } from './sources.ts'
 import { ExternalAuth, TEST_CREDENTIAL_HEADER, validateExternalAuth } from './external-auth.ts'
 import type { ExternalAuthTrace } from './auth-diagnostics.ts'
 import { Xingchen } from './xingchen.ts'
-import { DataSkill } from './dataskill.ts'
 import { callDiagnostics } from './request-diagnostics.ts'
 
 type Env = { Variables: { requestId: string; user: string; externalAuthTrace: ExternalAuthTrace | undefined;
@@ -58,7 +57,6 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   const app = new Hono<Env>()
   const externalAuth = new ExternalAuth(config.maxConcurrentQueries)
   const xingchen = new Xingchen(config.maxConcurrentQueries)
-  const dataskill = new DataSkill(config, apis.connections, externalAuth)
   let activeQueries = 0
 
   const isHttps = (c: Ctx) => config.secureCookies === 'auto'
@@ -311,16 +309,6 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     if (sizeKey) delete params[sizeKey]
     return { input: params, page, pageSize }
   }
-
-  app.all('/open/dataskill/*', async c => {
-    const started = performance.now()
-    c.set('completeCall', response => {
-      logs.write({ requestId: c.get('requestId'), at: now(), apiId: null, mode: 'DATASKILL',
-        elapsedMs: performance.now() - started, rowCount: 0, ok: response.ok,
-        error: response.ok ? null : `HTTP ${response.status}` })
-    })
-    return dataskill.forward(c.req.raw, c.get('requestId'))
-  })
 
   app.all('/open/*', async c => {
     const started = performance.now()
