@@ -15,6 +15,7 @@ export interface Config {
   trustProxy: boolean
   logRetentionDays: number
   maxConcurrentQueries: number
+  dataskill?: { baseUrl: string; token: string; authConnectionId: number; staffBinding: string; provider: string }
 }
 
 function integer(value: string | undefined, fallback: number, name: string): number {
@@ -46,6 +47,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 })
   const dbFile = join(dataDir, 'databridge.db')
   const cookie = env.COOKIE_SECURE ?? 'auto'
+  let dataskill: Config['dataskill']
+  if (env.DATASKILL_STUDIO_URL) {
+    const url = new URL(env.DATASKILL_STUDIO_URL)
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Invalid DATASKILL_STUDIO_URL')
+    if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('DataSkill requires HTTPS outside loopback')
+    if (!env.DATASKILL_SERVICE_TOKEN || !env.DATASKILL_AUTH_CONNECTION_ID) throw new Error('DataSkill service token and identity connection are required')
+    if (!/^[\x21-\x7e]{32,4096}$/.test(env.DATASKILL_SERVICE_TOKEN)) throw new Error('Invalid DataSkill service token')
+    dataskill = { baseUrl: url.toString().replace(/\/+$/, ''), token: env.DATASKILL_SERVICE_TOKEN,
+      authConnectionId: integer(env.DATASKILL_AUTH_CONNECTION_ID, 0, 'DATASKILL_AUTH_CONNECTION_ID'),
+      staffBinding: env.DATASKILL_STAFF_BINDING || '_auth_staff_code', provider: env.DATASKILL_IDENTITY_PROVIDER || 'uap' }
+  }
   return {
     port: integer(env.PORT, 8080, 'PORT'),
     dataDir,
@@ -59,6 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustProxy: env.TRUST_PROXY === 'true',
     logRetentionDays: integer(env.LOG_RETENTION_DAYS, 30, 'LOG_RETENTION_DAYS'),
     maxConcurrentQueries: integer(env.MAX_CONCURRENT_QUERIES, 20, 'MAX_CONCURRENT_QUERIES'),
+    dataskill,
   }
 }
 

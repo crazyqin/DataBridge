@@ -11,6 +11,11 @@ RUN npm run check && npm test && npm run build && npm prune --omit=dev
 
 FROM node:22.23-alpine
 WORKDIR /app
+ARG DATABRIDGE_VERSION=development
+ARG DATABRIDGE_BUILD_COMMIT=unknown
+LABEL org.opencontainers.image.title="DataBridge" \
+      org.opencontainers.image.version="${DATABRIDGE_VERSION}" \
+      org.opencontainers.image.revision="${DATABRIDGE_BUILD_COMMIT}"
 ENV NODE_ENV=production DATA_DIR=/data PORT=8080
 COPY --from=build /app/package.json /app/LICENSE ./
 COPY --from=build /app/node_modules ./node_modules
