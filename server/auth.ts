@@ -2,8 +2,10 @@ import { createHash, randomBytes, scrypt, timingSafeEqual, type ScryptOptions } 
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Config } from './config.ts'
-import { now, type Db } from './db.ts'
-import { bad, conflict, HttpError, notFound, unauthorized } from './errors.ts'
+import { now, transaction, type Db } from './db.ts'
+import { bad, conflict, forbidden, HttpError, notFound, unauthorized } from './errors.ts'
+import { integer, text } from './input.ts'
+import type { JsonObject } from './json.ts'
 
 const SESSION_IDLE_MS = 4 * 60 * 60 * 1000
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
@@ -32,6 +34,11 @@ export async function verifyPassword(password: string, stored: string): Promise<
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
 
 interface Session { username: string; expires: number }
+
+interface ApiKey {
+  id: number; name: string; prefix: string; createdAt: string; lastUsedAt: string | null; version: number; apiIds: number[]
+}
+const keySummary = 'SELECT id, name, prefix, created_at AS createdAt, last_used_at AS lastUsedAt, version FROM api_key'
 
 export class Auth {
   private readonly sessions = new Map<string, Session>()
@@ -115,31 +122,86 @@ export class Auth {
     if (existsSync(this.initialPasswordFile)) unlinkSync(this.initialPasswordFile)
   }
 
-  listKeys() {
-    return this.db.prepare('SELECT id, name, prefix, created_at AS createdAt, last_used_at AS lastUsedAt FROM api_key ORDER BY id DESC').all()
+  listKeys(): ApiKey[] {
+    const keys = this.db.prepare(keySummary + ' ORDER BY id DESC').all() as unknown as Omit<ApiKey, 'apiIds'>[]
+    const access = this.db.prepare('SELECT key_id, api_id FROM api_key_access ORDER BY api_id').all() as { key_id: number; api_id: number }[]
+    const grants = new Map<number, number[]>()
+    for (const row of access) {
+      const ids = grants.get(row.key_id) ?? []
+      ids.push(row.api_id)
+      grants.set(row.key_id, ids)
+    }
+    return keys.map(key => ({ ...key, apiIds: grants.get(key.id) ?? [] }))
   }
 
-  createKey(name: unknown) {
-    if (typeof name !== 'string' || !name.trim() || name.trim().length > 100) throw bad('请填写 1 到 100 个字符的名称')
+  private getKey(id: number): ApiKey {
+    const key = this.db.prepare(keySummary + ' WHERE id = ?').get(id) as unknown as Omit<ApiKey, 'apiIds'> | undefined
+    if (!key) throw notFound('调用密钥不存在，请刷新列表')
+    const rows = this.db.prepare('SELECT api_id FROM api_key_access WHERE key_id = ? ORDER BY api_id').all(id) as { api_id: number }[]
+    return { ...key, apiIds: rows.map(row => row.api_id) }
+  }
+
+  private keySettings(input: JsonObject) {
+    const name = text(input, 'name', '调用方名称', { max: 100 })
+    const ids = input.apiIds
+    if (!Array.isArray(ids) || ids.length > 1000 || ids.some(id => typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)) {
+      throw bad('授权接口必须是有效 ID 数组，最多 1000 个；空数组表示不允许调用任何接口')
+    }
+    const apiIds = [...new Set(ids as number[])].sort((a, b) => a - b)
+    for (const id of apiIds) {
+      const api = this.db.prepare('SELECT auth FROM api WHERE id = ?').get(id)
+      if (!api) throw bad('部分授权接口已不存在，请刷新后重新选择')
+      if (api.auth !== 'API_KEY') throw bad('只能授权访问方式为 API Key 的接口，请刷新后重新选择')
+    }
+    return { name, apiIds }
+  }
+
+  private assignKey(id: number, apiIds: number[]) {
+    this.db.prepare('DELETE FROM api_key_access WHERE key_id = ?').run(id)
+    const insert = this.db.prepare('INSERT INTO api_key_access (key_id, api_id) VALUES (?, ?)')
+    for (const apiId of apiIds) insert.run(id, apiId)
+  }
+
+  createKey(input: JsonObject) {
     const key = `dbk_${randomBytes(24).toString('base64url')}`
     const prefix = key.slice(0, 10)
-    const { lastInsertRowid } = this.db.prepare('INSERT INTO api_key (name, prefix, hash, created_at) VALUES (?, ?, ?, ?)')
-      .run(name.trim(), prefix, sha256(key), now())
-    return { id: Number(lastInsertRowid), name: name.trim(), prefix, key }
+    return transaction(this.db, () => {
+      const { name, apiIds } = this.keySettings(input)
+      const { lastInsertRowid } = this.db.prepare('INSERT INTO api_key (name, prefix, hash, created_at) VALUES (?, ?, ?, ?)')
+        .run(name, prefix, sha256(key), now())
+      const id = Number(lastInsertRowid)
+      this.assignKey(id, apiIds)
+      return { ...this.getKey(id), key }
+    })
+  }
+
+  updateKey(id: number, input: JsonObject) {
+    return transaction(this.db, () => {
+      const current = this.getKey(id)
+      if (integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER) !== current.version) {
+        throw conflict('调用密钥或授权接口已被修改，请重新打开编辑窗口')
+      }
+      const { name, apiIds } = this.keySettings(input)
+      this.db.prepare('UPDATE api_key SET name = ?, version = version + 1 WHERE id = ?').run(name, id)
+      this.assignKey(id, apiIds)
+      return this.getKey(id)
+    })
   }
 
   deleteKey(id: number) {
     if (this.db.prepare('DELETE FROM api_key WHERE id = ?').run(id).changes === 0) throw notFound()
   }
 
-  checkKey(key: string | undefined): boolean {
-    if (!key) return false
+  authorizeKey(key: string | undefined, apiId: number): void {
+    if (!key) throw unauthorized('API Key 无效')
     const row = this.db.prepare('SELECT id FROM api_key WHERE hash = ?').get(sha256(key)) as { id: number } | undefined
-    if (!row) return false
+    if (!row) throw unauthorized('API Key 无效')
+    if (!this.db.prepare('SELECT 1 FROM api_key_access WHERE key_id = ? AND api_id = ?').get(row.id, apiId)) {
+      throw forbidden('API Key 无权访问此接口')
+    }
     const time = now()
     const minuteAgo = new Date(Date.now() - 60_000).toISOString()
     this.db.prepare('UPDATE api_key SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)')
       .run(time, row.id, minuteAgo)
-    return true
   }
 }

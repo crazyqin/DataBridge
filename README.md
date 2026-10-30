@@ -22,16 +22,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.4.1 .
+docker build --platform linux/amd64 -t databridge:1.5.0 .
 mkdir -p release
-docker save databridge:1.4.1 | gzip > release/databridge-1.4.1-amd64.tar.gz
+docker save databridge:1.5.0 | gzip > release/databridge-1.5.0-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.4.1-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.5.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.4.1` |
+| Image | `databridge:1.5.0` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -119,17 +119,32 @@ Skill 使用连接所选 UAP 的个人凭据 Header 调用上述入口。DataBri
 
 管理 API：`GET/POST /admin/projects` 列表/创建项目，`PUT/DELETE /admin/projects/:id` 更新/删除项目；`PATCH /admin/projects/:id/apis` 接收 `{"operation":"add","apiIds":[1,2]}` 或 `remove`，每批最多 500 个接口。保存接口时可提交 `projectIds`（最多 100 个项目），编辑已有接口同时提交读取时的 `projectVersion`；省略 `projectIds` 时保留原归类，提交空数组则清空。列表和接口详情均返回项目 ID 与归类版本，项目列表返回 `apiCount`。所有项目管理接口仅管理员可用。
 
+## API Key 接口授权
+
+在「配置中心 → 调用密钥」创建 Key 或点击「编辑授权」，按接口名称、路径搜索并选择允许访问的接口。一个 Key 可以授权多个接口，多个 Key 也可以访问同一个接口。空授权列表表示无法调用任何 API Key 接口，可以先创建 Key 再补充授权。
+
+**升级到 v1.5.0 后，所有已有 Key 默认没有接口权限。** 原 Key 值仍有效，无需重新分发；管理员需逐个编辑授权后恢复调用。没有全局通用 Key 或默认全部授权。
+
+- 只能选择访问方式为「API Key」的接口；未启用的接口可以提前授权，启用后才能调用。
+- 授权按接口 ID 区分，同一路径的 GET 与 POST 需分别授权。新增或复制接口不会自动获得授权，项目分组不影响权限。
+- 修改授权后，后续请求立即按新权限校验；清空授权暂停访问，吊销后 Key 失效。
+- 删除接口或将访问方式改为其他方式，会移除该接口的授权；切回 API Key 时需重新授权。修改名称、路径和启停状态保留授权。
+- 缺少、错误或已吊销的 Key 返回 HTTP 401；有效但未获授权的 Key 返回 HTTP 403「API Key 无权访问此接口」。User-Agent 等接口限制继续生效。
+- 管理端「执行 SQL 测试」使用管理员会话；验证 Key 授权需通过 `/open/**` 实际调用。
+
+管理 API：`GET /admin/keys` 返回名称、前缀、时间、`apiIds` 和 `version`；`POST /admin/keys` 接收 `{"name":"CRM 系统","apiIds":[1,2]}`，仅创建响应包含明文 `key`；`PUT /admin/keys/:id` 接收名称、`apiIds` 和读取时的 `version`，过期编辑返回 409；`DELETE /admin/keys/:id` 吊销 Key。`apiIds` 必须显式提供，为空数组时拒绝所有接口，最多 1000 个接口。所有密钥管理操作仅管理员可用。
+
 ## 创建第一个接口
 
 1. **数据源**：新增 PostgreSQL 数据源，填写主机、端口、数据库和一个**只授予 SELECT 权限**的账号，然后点击「测试连接」。
-2. **调用密钥**：为调用方创建一个 Key。Key 只显示一次，请立即保存。每个调用方可以单独创建，也可以单独吊销。
+2. **调用密钥**：为调用方创建一个 Key。Key 只显示一次，请立即保存；此时可以暂不选择接口，等待接口保存后补充授权。
 3. **接口管理 → 创建接口**：
    - 在「基本设置」选择「实时查询」，填写名称和路径 `/open/customer`，调用方式选 GET，访问方式选「API Key」。
    - 在「业务配置」选择数据源，SQL 填 `SELECT cust_id, cust_name FROM customer WHERE cust_id = :cust_id`。
    - 添加请求参数 `cust_id`，类型 `string`，设为必填。
    - 在「测试发布」中输入 `{"cust_id": "10001"}` 并点击「执行 SQL 测试」。测试直接使用表单中的内容，不需要先保存。页面会显示本次构造的测试请求、请求 Header 和正文，以及服务器返回的 HTTP 状态、Header（含 Request ID）和正文；失败响应、HTML/非 JSON 返回和连接错误也会保留。敏感凭证已脱敏。
    - 打开「启用接口」，然后保存。
-4. 调用：
+4. **授权并调用**：回到「配置中心 → 调用密钥」，点击该 Key 的「编辑授权」，勾选刚保存的接口并保存。然后调用：
 
 ```bash
 curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001'
@@ -293,7 +308,7 @@ API 编辑页将诊断收在「身份服务诊断」和「测试请求详情」�
 
 正式调用的验证详情可在「调用日志 → 查看详情 → 身份验证」中查看，只有已登录的管理员能够访问。调用日志列表仅返回摘要，详情按需读取；旧日志缺少的详情不会追溯生成。正式调用的请求、响应、Header 和成功条件检查保留原始值，不再替换为 `[REDACTED]`，正文预览最多保留 8 KiB。详情与调用日志使用相同的保留期限，开放接口的响应不包含验证详情。管理端测试详情仅在测试响应中返回，不写入正式调用日志。
 
-验证服务应使用 HTTPS 或可信的内部通道。自定义凭证 Header 时，需确认反向代理会保留该 Header。已有公开接口和 API Key 接口保持原规则；无法识别的访问方式会拒绝调用，需要管理员重新配置。
+验证服务应使用 HTTPS 或可信的内部通道。自定义凭证 Header 时，需确认反向代理会保留该 Header。公开接口保持公开访问；API Key 接口按指定接口授权校验；无法识别的访问方式会拒绝调用，需要管理员重新配置。
 
 ## 接口规则
 
@@ -354,7 +369,7 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001&
 - 数据源密码用 AES-256-GCM 加密后存储。**`secret.key` 丢失后，已保存的数据源密码无法解密**；如果数据库还在而密钥缺失，服务会拒绝启动。
 - 管理员密码用 scrypt 哈希存储。修改密码后，该账号的所有会话都会失效。登录失败次数有限制。
 - 管理端使用 `SameSite=Strict` 的会话 Cookie，写操作还要求带 `X-Requested-With` 请求头，用来防御 CSRF。
-- API Key 只保存 SHA-256 哈希，页面上只显示前缀。
+- API Key 只保存 SHA-256 哈希，页面上只显示前缀；每次调用检查指定接口授权，未授权默认拒绝。
 - User-Agent 限制只能用于客户端兼容性控制，不能代替 API Key。
 - 调用日志记录请求方法、路径、HTTP 状态、耗时、行数和错误摘要；详情保存调用时的接口信息、完整请求地址、来源 IP、原始参数、请求与响应 Header、JSON 响应预览、处理阶段和外部身份验证记录，仅管理员可查看。数据库返回的错误详情不会出现在开放接口的响应或日志中，只在管理端的测试和同步状态里显示。
 - 生产环境请通过 HTTPS 反向代理访问，并设置 `TRUST_PROXY=true`。

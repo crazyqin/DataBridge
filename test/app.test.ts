@@ -47,6 +47,10 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
   async function createApi(config: Record<string, unknown>) {
     const response = await call('POST', '/admin/apis', { method: 'GET', auth: 'API_KEY', enabled: true, datasourceId, ...config })
     assert.equal(response.status, 201, response.text)
+    if (response.json.auth === 'API_KEY') {
+      const key = (await call('GET', '/admin/keys')).json[0]
+      assert.equal((await call('PUT', `/admin/keys/${key.id}`, { ...key, apiIds: [...key.apiIds, response.json.id] })).status, 200)
+    }
     return response.json
   }
 
@@ -100,7 +104,7 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
   })
 
   test('API keys are shown once and can be revoked', async () => {
-    const created = await call('POST', '/admin/keys', { name: 'client' })
+    const created = await call('POST', '/admin/keys', { name: 'client', apiIds: [] })
     assert.equal(created.status, 201)
     apiKey = created.json.key
     assert.match(apiKey, /^dbk_/)

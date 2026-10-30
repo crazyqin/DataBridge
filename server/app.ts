@@ -153,7 +153,8 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
   // ---- API keys ----
 
   app.get('/admin/keys', c => admin(c, auth.listKeys()))
-  app.post('/admin/keys', async c => admin(c, auth.createKey((await readJson(c)).name), 201))
+  app.post('/admin/keys', async c => admin(c, auth.createKey(await readJson(c)), 201))
+  app.put('/admin/keys/:id', async c => admin(c, auth.updateKey(id(c.req.param('id')), await readJson(c))))
   app.delete('/admin/keys/:id', c => {
     auth.deleteKey(id(c.req.param('id')))
     return c.body(null, 204)
@@ -358,7 +359,7 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
       if (!api) throw notFound('接口不存在或未启用')
       diagnostic.stage('access')
       if (!['PUBLIC', 'API_KEY', 'EXTERNAL'].includes(api.auth)) throw new HttpError(503, '访问方式无效，请重新配置接口')
-      if (api.auth === 'API_KEY' && !auth.checkKey(c.req.header('X-API-Key'))) throw unauthorized('API Key 无效')
+      if (api.auth === 'API_KEY') auth.authorizeKey(c.req.header('X-API-Key'), api.id)
       if (!userAgentAllowed(api.userAgents, c.req.header('User-Agent'))) throw forbidden('User-Agent 不被允许')
       if (api.auth === 'EXTERNAL') diagnostic.stage('identity')
       const identity = api.auth === 'EXTERNAL'

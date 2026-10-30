@@ -132,6 +132,29 @@ const MIGRATIONS = [
     PRIMARY KEY (api_id, project_id)
   );
   CREATE INDEX api_project_project ON api_project(project_id);`,
+  `CREATE TABLE api_key_scoped (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL, prefix TEXT NOT NULL, hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL, last_used_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1
+  );
+  INSERT INTO api_key_scoped (id, name, prefix, hash, created_at, last_used_at)
+    SELECT id, name, prefix, hash, created_at, last_used_at FROM api_key;
+  DROP TABLE api_key;
+  ALTER TABLE api_key_scoped RENAME TO api_key;
+  CREATE TABLE api_key_access (
+    key_id INTEGER NOT NULL REFERENCES api_key(id) ON DELETE CASCADE,
+    api_id INTEGER NOT NULL REFERENCES api(id) ON DELETE CASCADE,
+    PRIMARY KEY (key_id, api_id)
+  );
+  CREATE INDEX api_key_access_api ON api_key_access(api_id);
+  CREATE TRIGGER api_key_access_delete BEFORE DELETE ON api BEGIN
+    UPDATE api_key SET version = version + 1 WHERE id IN (SELECT key_id FROM api_key_access WHERE api_id = OLD.id);
+  END;
+  CREATE TRIGGER api_key_access_auth BEFORE UPDATE OF auth ON api WHEN OLD.auth = 'API_KEY' AND NEW.auth <> 'API_KEY' BEGIN
+    UPDATE api_key SET version = version + 1 WHERE id IN (SELECT key_id FROM api_key_access WHERE api_id = OLD.id);
+    DELETE FROM api_key_access WHERE api_id = OLD.id;
+  END;`,
 ]
 
 export type Db = DatabaseSync

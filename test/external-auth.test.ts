@@ -707,7 +707,7 @@ test('identity-scoped APIs validate configuration and reject missing identity wi
     assert.equal((await f.app.request('/open/scoped')).status, 401)
     assert.equal((await f.app.request('/open/scoped?X-Access-Token=fake&subject=someone')).status, 401)
     assert.equal((await f.app.request('/open/scoped', { headers: { 'X-Access-Token': 'test-token' } })).status, 502)
-    const key = f.auth.createKey('legacy-client')
+    const key = f.auth.createKey({ name: 'legacy-client', apiIds: [] })
     assert.equal((await f.app.request('/open/scoped', { headers: { 'X-API-Key': key.key } })).status, 401)
     const old = f.apis.save(undefined, {
       name: 'legacy', code: 'legacy', path: '/open/legacy', mode: 'MANUAL', auth: 'PUBLIC', enabled: true,
@@ -716,6 +716,7 @@ test('identity-scoped APIs validate configuration and reject missing identity wi
     f.apis.createRow(old.id, { name: 'public row' })
     assert.equal((await f.app.request('/open/legacy')).status, 200)
     f.apis.save(old.id, { ...old, auth: 'API_KEY' } as unknown as JsonObject)
+    f.auth.updateKey(key.id, { name: key.name, version: key.version, apiIds: [old.id] })
     assert.equal((await f.app.request('/open/legacy')).status, 401)
     assert.equal((await f.app.request('/open/legacy', { headers: { 'X-API-Key': key.key } })).status, 200)
     f.db.prepare('UPDATE api SET auth = ? WHERE id = ?').run('UNSUPPORTED', old.id)

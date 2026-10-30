@@ -85,7 +85,7 @@ onMounted(async () => {
         <el-menu-item-group title="工作空间"><el-menu-item v-for="key in (['overview', 'apis', 'rows', 'logs'] as const)" :key="key" :index="key"><UiIcon :name="key" />{{ pages[key] }}</el-menu-item></el-menu-item-group>
         <el-menu-item-group title="配置中心"><el-menu-item v-for="key in (['connections', 'sources', 'keys'] as const)" :key="key" :index="key"><UiIcon :name="key" />{{ pages[key] }}</el-menu-item></el-menu-item-group>
       </el-menu>
-      <div class="sidebar-footer"><span class="status-dot"></span> DataBridge <span>v1.4.1</span></div>
+      <div class="sidebar-footer"><span class="status-dot"></span> DataBridge <span>v1.5.0</span></div>
     </el-aside>
     <el-container>
       <el-header class="topbar">

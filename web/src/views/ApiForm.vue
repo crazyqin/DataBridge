@@ -273,7 +273,7 @@ onMounted(async () => {
             </div>
             <div class="field-help">基础地址由连接统一提供。应用 ID、密钥和公钥在业务配置中填写。</div>
           </el-form-item>
-          <el-alert v-if="form.auth === 'API_KEY'" title="调用方需在 X-API-Key 请求头中携带有效 Key，可在「调用密钥」中创建。" type="info" :closable="false" />
+          <el-alert v-if="form.auth === 'API_KEY'" title="保存接口后，请在「配置中心 → 调用密钥」中为 Key 授权此接口。调用方需在 X-API-Key 请求头中携带已获授权的 Key。" type="info" :closable="false" />
           <el-alert v-if="form.auth === 'PUBLIC'" title="启用后，任何能访问此地址的调用方都可以获取数据。" type="info" :closable="false" />
         </section>
         <el-button type="primary" @click="activeTab = 'business'">下一步：业务配置 →</el-button>

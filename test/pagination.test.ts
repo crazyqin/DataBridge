@@ -17,7 +17,9 @@ test('existing row databases gain an empty remark without losing records', () =>
   const file = join(dir, 'old.db')
   const old = new DatabaseSync(file)
   try {
-    old.exec(`CREATE TABLE api (id INTEGER PRIMARY KEY, name TEXT);
+    old.exec(`CREATE TABLE api (id INTEGER PRIMARY KEY, name TEXT, auth TEXT);
+      CREATE TABLE api_key (id INTEGER PRIMARY KEY, name TEXT NOT NULL, prefix TEXT NOT NULL,
+        hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT);
       CREATE TABLE api_row (api_id INTEGER, row_key TEXT, data TEXT, position INTEGER,
       sort INTEGER, version INTEGER DEFAULT 1, updated_at TEXT);
       CREATE TABLE request_log (id INTEGER PRIMARY KEY); PRAGMA user_version = 1;`)
