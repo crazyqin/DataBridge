@@ -10,8 +10,9 @@ import Sources from './views/Sources.vue'
 import Connections from './views/Connections.vue'
 import Overview from './views/Overview.vue'
 import UiIcon from './components/UiIcon.vue'
+import Exports from './views/Exports.vue'
 
-const pages = { overview: '工作台', apis: '接口管理', rows: '数据维护', logs: '调用日志', connections: '连接管理', sources: '数据源', keys: '调用密钥' } as const
+const pages = { overview: '工作台', apis: '接口管理', rows: '数据维护', logs: '调用日志', connections: '连接管理', sources: '数据源', keys: '调用密钥', exports: '完整导出' } as const
 type Page = keyof typeof pages
 
 const username = ref<string>()
@@ -83,13 +84,13 @@ onMounted(async () => {
       <div class="sidebar-brand"><span class="brand-symbol"><UiIcon name="bridge" /></span><div>数桥 <small>DataBridge</small></div></div>
       <el-menu :default-active="page" @select="navigate($event as Page)">
         <el-menu-item-group title="工作空间"><el-menu-item v-for="key in (['overview', 'apis', 'rows', 'logs'] as const)" :key="key" :index="key"><UiIcon :name="key" />{{ pages[key] }}</el-menu-item></el-menu-item-group>
-        <el-menu-item-group title="配置中心"><el-menu-item v-for="key in (['connections', 'sources', 'keys'] as const)" :key="key" :index="key"><UiIcon :name="key" />{{ pages[key] }}</el-menu-item></el-menu-item-group>
+        <el-menu-item-group title="配置中心"><el-menu-item v-for="key in (['connections', 'sources', 'keys', 'exports'] as const)" :key="key" :index="key"><UiIcon :name="key" />{{ pages[key] }}</el-menu-item></el-menu-item-group>
       </el-menu>
-      <div class="sidebar-footer"><span class="status-dot"></span> DataBridge <span>v1.5.0</span></div>
+      <div class="sidebar-footer"><span class="status-dot"></span> DataBridge <span>v1.6.0</span></div>
     </el-aside>
     <el-container>
       <el-header class="topbar">
-        <div class="breadcrumb"><span>{{ ['connections', 'sources', 'keys'].includes(page) ? '配置中心' : '工作空间' }}</span><span>/</span><strong>{{ pages[page] }}</strong></div><el-select class="mobile-nav" :model-value="page" aria-label="导航" @update:model-value="navigate($event as Page)"><el-option v-for="(label, key) in pages" :key="key" :value="key" :label="label" /></el-select>
+        <div class="breadcrumb"><span>{{ ['connections', 'sources', 'keys', 'exports'].includes(page) ? '配置中心' : '工作空间' }}</span><span>/</span><strong>{{ pages[page] }}</strong></div><el-select class="mobile-nav" :model-value="page" aria-label="导航" @update:model-value="navigate($event as Page)"><el-option v-for="(label, key) in pages" :key="key" :value="key" :label="label" /></el-select>
         <div class="topbar-actions">
           <span class="user-chip"><span class="user-avatar">{{ username.slice(0, 1).toUpperCase() }}</span>{{ username }}</span>
           <el-button text @click="password.open = true">修改密码</el-button>
@@ -103,6 +104,7 @@ onMounted(async () => {
         <Apis v-else-if="page === 'apis'" :initial-create="createApi" />
         <Rows v-else-if="page === 'rows'" />
         <Logs v-else-if="page === 'logs'" :failed-window="failedWindow" />
+        <Exports v-else-if="page === 'exports'" />
         <Keys v-else />
       </el-main>
     </el-container>

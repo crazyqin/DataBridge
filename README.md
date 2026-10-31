@@ -22,16 +22,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.5.0 .
+docker build --platform linux/amd64 -t databridge:1.6.0 .
 mkdir -p release
-docker save databridge:1.5.0 | gzip > release/databridge-1.5.0-amd64.tar.gz
+docker save databridge:1.6.0 | gzip > release/databridge-1.6.0-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.5.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.6.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.5.0` |
+| Image | `databridge:1.6.0` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -373,6 +373,33 @@ curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001&
 - User-Agent 限制只能用于客户端兼容性控制，不能代替 API Key。
 - 调用日志记录请求方法、路径、HTTP 状态、耗时、行数和错误摘要；详情保存调用时的接口信息、完整请求地址、来源 IP、原始参数、请求与响应 Header、JSON 响应预览、处理阶段和外部身份验证记录，仅管理员可查看。数据库返回的错误详情不会出现在开放接口的响应或日志中，只在管理端的测试和同步状态里显示。
 - 生产环境请通过 HTTPS 反向代理访问，并设置 `TRUST_PROXY=true`。
+
+## 完整原始导出
+
+在「配置中心 → 完整导出」点击「生成完整导出包」，后台生成完成后点击「下载导出包」。仅登录管理员可以创建、查看、下载和删除导出；不受日志页面筛选或分页限制。导出期间服务继续接受调用，各文件来自同一份 SQLite 读取快照。
+
+压缩包为 `.tar.gz`，解压后包含：
+
+| 文件 | 用途 |
+| --- | --- |
+| `raw/databridge.sqlite`、`raw/secret.key` | 全部平台数据的原始数据库快照及加密密钥 |
+| `tables/*.jsonl`、`schema.json` | 所有业务表的原始字段、记录、表结构和外键；JSON 文本字段保留原文 |
+| `configuration/*.jsonl` | 接口定义、SQL、参数、连接与数据源的可读配置，已解密 |
+| `analysis/api_rows.jsonl` | 全部手工和快照业务数据，`data` 已解析为 JSON |
+| `analysis/requests.jsonl` | 全部调用摘要，关联请求响应与外部身份验证详情；缺失详情为 `null` |
+| `analysis/requests.csv`、`analysis/sync_history.csv` | 调用摘要与同步历史，供 Excel/Python 使用 |
+| `analysis/summary.json`、`analysis/by_api.csv`、`analysis/daily.csv` | 总体及分接口耗时、成功/失败数、失败率、UTC 每日统计 |
+| `manifest.json`、`README.txt` | 软件/格式版本、快照时间、行数、逐文件 SHA-256、字段解释和 Python 读取示例 |
+
+导出始终保留完整原始值，不做脱敏，包括已保存的凭据、内部地址、业务原文和加密密钥。管理员密码与 API Key 原值从未持久化，只能导出已有哈希。原始表和诊断正文保持原值；可读 JSONL 保留大整数与精确小数，读取时可用 Python `json.loads(line, parse_float=Decimal)`。CSV 使用 UTF-8 BOM 和标准引号；按文本导入标识符和以 `=` 开头的原文，避免 Excel 改写值或将其作为公式。
+
+统计覆盖快照时全部已保存调用，以 `ok` 字段判定成功/失败（包括 SSE 流内结果）；不能仅依据 HTTP 200。耗时单位为毫秒，P50/P95/P99 使用 nearest-rank，失败率为 0~1；没有样本时耗时与失败率为 `null`。`api_name_current` 是导出时名称，调用时接口信息在 `requests.jsonl` 的 `request.api` 中。表间关联使用 `id/api_id/log_id/key_id/project_id`，完整关系见 `schema.json`。
+
+已被保留策略清理的日志、此前被截断或脱敏的部分，以及未保存的完整 SSE 正文无法补回；导出保留已有缺失说明与截断标记。不连接外部数据库执行查询，也不抓取外部服务、服务器控制台日志、源码或环境变量。
+
+同一时刻只生成一个导出，支持取消。完成后可下载 1 小时，最多保留最近 3 个任务，过期、手动删除和服务重启时清理临时文件。下载直接流式传输到浏览器，不需要把整个文件载入页面内存。
+
+管理 API：`GET /admin/exports` 列出任务，`POST /admin/exports` 创建任务并返回 202；`GET /admin/exports/:id` 获取状态；`GET /admin/exports/:id/download` 下载；`DELETE /admin/exports/:id` 取消或删除。状态为 `RUNNING/READY/FAILED`，未完成时下载返回 409，过期或不存在返回 404；所有写操作要求 `X-Requested-With: DataBridge`。
 
 ## 调用日志详情
 

@@ -7,6 +7,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import type { Api, Apis } from './apis.ts'
 import { userAgentAllowed } from './apis.ts'
+import { Exports } from './exports.ts'
 import type { Auth } from './auth.ts'
 import type { Config } from './config.ts'
 import { now, type Db } from './db.ts'
@@ -26,7 +27,7 @@ type Env = { Variables: { requestId: string; user: string; externalAuthTrace: Ex
   callDiagnostic: ReturnType<typeof callDiagnostics> | undefined; completeCall: ((response: Response) => void) | undefined } }
 type Ctx = Context<Env>
 
-export interface Services { config: Config; db: Db; auth: Auth; sources: Sources; apis: Apis; logs: Logs }
+export interface Services { config: Config; db: Db; auth: Auth; sources: Sources; apis: Apis; logs: Logs; exports?: Exports }
 
 const COOKIE = 'databridge_session'
 
@@ -54,7 +55,7 @@ function withDetail(error: unknown): never {
   throw error
 }
 
-export function createApp({ config, db, auth, sources, apis, logs }: Services) {
+export function createApp({ config, db, auth, sources, apis, logs, exports = new Exports(config) }: Services) {
   const app = new Hono<Env>()
   const externalAuth = new ExternalAuth(config.maxConcurrentQueries)
   const dataskill = new DataSkill(config, apis.connections, externalAuth)
@@ -147,6 +148,21 @@ export function createApp({ config, db, auth, sources, apis, logs }: Services) {
     const input = await readJson(c)
     await auth.changePassword(c.get('user'), input.currentPassword, input.newPassword)
     deleteCookie(c, COOKIE, { path: '/' })
+    return c.body(null, 204)
+  })
+
+  // ---- complete exports ----
+
+  app.get('/admin/exports', c => admin(c, exports.list()))
+  app.post('/admin/exports', async c => admin(c, await exports.start(), 202))
+  app.get('/admin/exports/:id', c => admin(c, exports.get(c.req.param('id'))))
+  app.get('/admin/exports/:id/download', async c => {
+    const { job, stream } = await exports.download(c.req.param('id'))
+    return c.body(stream, 200, { 'Content-Type': 'application/gzip', 'Content-Length': String(job.bytes),
+      'Content-Disposition': `attachment; filename="${job.filename}"`, 'Cache-Control': 'private, no-store' })
+  })
+  app.delete('/admin/exports/:id', async c => {
+    await exports.remove(c.req.param('id'))
     return c.body(null, 204)
   })
 
