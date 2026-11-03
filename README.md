@@ -22,16 +22,16 @@ docker compose up -d --build
 在能联网的机器上构建并导出镜像：
 
 ```bash
-docker build --platform linux/amd64 -t databridge:1.6.0 .
+docker build --platform linux/amd64 -t databridge:1.6.1 .
 mkdir -p release
-docker save databridge:1.6.0 | gzip > release/databridge-1.6.0-amd64.tar.gz
+docker save databridge:1.6.1 | gzip > release/databridge-1.6.1-amd64.tar.gz
 ```
 
-在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.6.0-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
+在 Portainer 的 **Images → Import** 中上传压缩包；也可以在目标机器执行 `gzip -dc release/databridge-1.6.1-amd64.tar.gz | docker load`。镜像归档保存在本地 `release/`，不会提交到 Git。导入后在 **Containers → Add container** 中填写：
 
 | 项目 | 值 |
 | --- | --- |
-| Image | `databridge:1.6.0` |
+| Image | `databridge:1.6.1` |
 | Port | 宿主机 `8080` → 容器 `8080` |
 | Volume | 命名卷（如 `databridge_data`）挂载到 `/data` |
 | Env | `TZ=Asia/Shanghai` |
@@ -314,7 +314,7 @@ API 编辑页将诊断收在「身份服务诊断」和「测试请求详情」�
 
 **参数**：GET 接口从查询字符串读取参数，POST 接口从 JSON 请求体读取参数。未声明的参数会被拒绝（400）。SQL 中用 `:name` 引用参数，每个参数都必须声明类型；保存配置时会检查 SQL 与参数声明是否一一对应。
 
-**分页**：三种数据模式都支持可选的 `page` 和 `pageSize`。GET 放在查询字符串，POST 放在 JSON 请求体。只传其中一个也会开启分页；页码默认 1，每页默认最多 100 条。`pageSize` 上限为 1000，且不能超过该 API 配置的「最大行数」。分页响应的 `meta` 增加 `page`、`page_size`、`total`、`total_pages`、`has_more`；`count` 是本页条数。超过末页返回空数组。未传分页参数时，响应格式和原有最大行数限制保持不变。如果业务参数或过滤字段叫 `page` / `pageSize`，可改用 `_page` / `_pageSize` 指定分页。实时查询分页会额外执行一次总数查询；SQL 应写明 `ORDER BY`，以保证翻页顺序稳定。
+**分页**：三种数据模式都支持可选的 `page` 和 `pageSize`。GET 放在查询字符串，POST 放在 JSON 请求体。只传其中一个也会开启分页；页码默认 1，每页默认最多 100 条。`pageSize` 上限为 100000，且不能超过该 API 配置的「最大行数」；「最大行数」默认 10000，可在接口编辑页的「高级设置」中调整，最高 1000000。分页响应的 `meta` 增加 `page`、`page_size`、`total`、`total_pages`、`has_more`；`count` 是本页条数。超过末页返回空数组。未传分页参数时，响应格式和原有最大行数限制保持不变。如果业务参数或过滤字段叫 `page` / `pageSize`，可改用 `_page` / `_pageSize` 指定分页。实时查询分页会额外执行一次总数查询；SQL 应写明 `ORDER BY`，以保证翻页顺序稳定。
 
 ```bash
 curl -H 'X-API-Key: dbk_…' 'http://localhost:8080/open/customer?cust_id=10001&page=1&pageSize=50'

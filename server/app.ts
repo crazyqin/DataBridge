@@ -322,7 +322,7 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
       return integer({ value: number }, 'value', label, 1, max)
     }
     const page = read(pageKey, '页码', 1, 1_000_000)
-    const pageSize = read(sizeKey, '每页条数', Math.min(100, api.maxRows), Math.min(1000, api.maxRows))
+    const pageSize = read(sizeKey, '每页条数', Math.min(100, api.maxRows), Math.min(100_000, api.maxRows))
     const params = { ...input }
     if (pageKey) delete params[pageKey]
     if (sizeKey) delete params[sizeKey]

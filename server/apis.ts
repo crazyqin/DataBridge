@@ -224,7 +224,7 @@ export class Apis {
         ? text({ cronTimezone: input.cronTimezone ?? this.config.timezone }, 'cronTimezone', '同步时区', { max: 100 }) : null,
       allowEmpty: mode === 'SNAPSHOT' && flag(input, 'allowEmpty', '空结果覆盖', false),
       timeoutSeconds: sourced || mode === 'XINGCHEN' ? integer(input, 'timeoutSeconds', '请求超时', 1, 120, mode === 'XINGCHEN' ? 60 : 10) : 10,
-      maxRows: integer(input, 'maxRows', '最大行数', 1, 100_000, 10_000),
+      maxRows: integer(input, 'maxRows', '最大行数', 1, 1_000_000, 10_000),
       enabled: flag(input, 'enabled', '启用状态', false),
     }
     if (mode === 'XINGCHEN' && values.auth !== 'EXTERNAL') throw bad('星辰转发必须使用外部身份验证获取工号')

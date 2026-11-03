@@ -81,6 +81,39 @@ test('stored search and sorting use global positions; open API pages large manua
     assert.equal((await call('GET', '/open/manual?pageSize=3')).status, 400)
     assert.deepEqual((await call('GET', '/open/manual?page=4')).json.data, [])
 
+    for (const method of ['GET', 'POST']) {
+      const path = `/open/large-${method.toLowerCase()}`
+      const created = await call('POST', '/admin/apis', {
+        name: `large ${method}`, code: `large_${method.toLowerCase()}`, path, method,
+        mode: 'MANUAL', auth: 'PUBLIC', enabled: true, maxRows: 1_000_000,
+        fields: [{ name: 'id', type: 'integer' }],
+      })
+      assert.equal(created.status, 201)
+      const api = created.json
+      assert.equal((await call('GET', `/admin/apis/${api.id}`)).json.maxRows, 1_000_000)
+      assert.equal((await call('PUT', `/admin/apis/${api.id}`, { ...api, maxRows: 1_000_001 })).status, 400)
+      db.prepare(`WITH RECURSIVE items(id) AS (
+        VALUES (1) UNION ALL SELECT id + 1 FROM items WHERE id < 100001
+      ) INSERT INTO api_row (api_id, row_key, data, position, updated_at)
+        SELECT ?, CAST(id AS TEXT), json_object('id', id), id, '2026-01-01' FROM items`).run(api.id)
+      const page = (page: number, pageSize: number) => method === 'GET'
+        ? call(method, `${path}?page=${page}&pageSize=${pageSize}`)
+        : call(method, path, { page, pageSize })
+      const first = await page(1, 100_000)
+      assert.equal(first.status, 200)
+      assert.equal(first.json.data.length, 100_000)
+      assert.equal(first.json.data[0].id, 1)
+      assert.equal(first.json.data.at(-1).id, 100_000)
+      assert.equal(first.json.meta.page_size, 100_000)
+      assert.equal(first.json.meta.total, 100_001)
+      assert.equal(first.json.meta.total_pages, 2)
+      assert.equal(first.json.meta.has_more, true)
+      const last = await page(2, 100_000)
+      assert.deepEqual(last.json.data, [{ id: 100_001 }])
+      assert.equal(last.json.meta.has_more, false)
+      assert.equal((await page(1, 100_001)).status, 400)
+    }
+
     const collision = apis.save(undefined, {
       name: 'collision', code: 'collision', path: '/open/collision', mode: 'MANUAL', auth: 'PUBLIC', enabled: true,
       fields: [{ name: 'page', type: 'integer' }], filters: ['page'],

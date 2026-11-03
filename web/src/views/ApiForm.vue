@@ -306,7 +306,7 @@ onMounted(async () => {
         <el-collapse class="advanced-panel"><el-collapse-item title="高级设置 · 超时、行数与 User-Agent" name="advanced">
           <div class="form-grid">
             <el-form-item v-if="sourced || forwarding" label="请求超时（秒）"><el-input-number v-model="form.timeoutSeconds" :min="1" :max="120" /></el-form-item>
-            <el-form-item v-if="!forwarding" label="最大行数"><el-input-number v-model="form.maxRows" :min="1" :max="100000" /></el-form-item>
+            <el-form-item v-if="!forwarding" label="最大行数"><el-input-number v-model="form.maxRows" :min="1" :max="1000000" /></el-form-item>
           </div>
           <el-form-item label="允许的 User-Agent"><el-input v-model="lists.userAgents" type="textarea" :rows="2" placeholder="留空不限制；每行一条，末尾 * 表示前缀匹配" /><div class="field-help">客户端可自行设置 User-Agent，此项仅用于兼容性限制。</div></el-form-item>
         </el-collapse-item></el-collapse>
