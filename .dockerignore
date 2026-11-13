@@ -8,3 +8,5 @@ release
 *.log
 doc
 外部身份验证配置说明.md
+
+*.xlsx

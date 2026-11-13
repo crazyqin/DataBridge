@@ -21,6 +21,7 @@ await exports.initialize()
 const passwordFile = await auth.bootstrap()
 if (passwordFile) console.log(`Initial admin password for "${config.adminUsername}" written to ${passwordFile}`)
 apis.startSchedules()
+apis.directory.start()
 
 const housekeeping = setInterval(() => {
   logs.prune(config.logRetentionDays)

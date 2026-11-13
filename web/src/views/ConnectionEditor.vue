@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CONNECTION_LABELS, defaultExternalAuth, request, RequestError, type Connection, type ConnectionKind, type ConnectionSummary, type DataSkillConfig, type ExternalAuthConfig, type ExternalAuthTrace as AuthTrace } from '../api'
+import { CONNECTION_LABELS, defaultExternalAuth, defaultAccessPolicy, STUDIO_ACTION_LABELS, request, RequestError, type Connection, type ConnectionKind, type ConnectionSummary, type DataSkillConfig, type ExternalAuthConfig, type ExternalAuthTrace as AuthTrace } from '../api'
 import ExternalAuthForm from './ExternalAuthForm.vue'
 import ExternalAuthTrace from './ExternalAuthTrace.vue'
+import AccessPolicyForm from './AccessPolicyForm.vue'
 const props = defineProps<{ id?: number; kind: ConnectionKind }>()
 const emit = defineEmits<{ close: []; saved: [connection: Connection] }>()
 const name = ref('')
@@ -11,7 +12,7 @@ const version = ref<number>()
 const usedBy = ref<Connection['usedBy']>([])
 const usedByConnections = ref<Connection['usedByConnections']>([])
 const identities = ref<ConnectionSummary[]>([])
-const studio = ref<DataSkillConfig>({ baseUrl: '', serviceToken: '', authConnectionId: null, staffCodeBinding: '', identityProvider: 'uap', enabled: false })
+const studio = ref<DataSkillConfig>({ baseUrl: '', serviceToken: '', authConnectionId: null, staffCodeBinding: '', identityProvider: 'uap', enabled: false, accessPolicies: Object.fromEntries(Object.keys(STUDIO_ACTION_LABELS).map(key => [key, defaultAccessPolicy()])) as NonNullable<DataSkillConfig['accessPolicies']> })
 const hasServiceToken = ref(false)
 const serviceTokenSha256 = ref('')
 const selectedIdentity = computed(() => identities.value.find(c => c.id === studio.value.authConnectionId))
@@ -48,6 +49,7 @@ onMounted(async () => {
     if (connection.kind === 'EXTERNAL_AUTH') auth.value = connection.config as ExternalAuthConfig
     else if (connection.kind === 'DATASKILL') {
       studio.value = connection.config as DataSkillConfig
+      studio.value.accessPolicies ??= Object.fromEntries(Object.keys(STUDIO_ACTION_LABELS).map(key => [key, defaultAccessPolicy(false)])) as NonNullable<DataSkillConfig['accessPolicies']>
       hasServiceToken.value = !!connection.hasServiceToken
       serviceTokenSha256.value = connection.serviceTokenSha256 || ''
     }
@@ -116,6 +118,7 @@ async function test() {
           <el-form-item label="工号映射" required><el-select v-model="studio.staffCodeBinding" placeholder="选择 string 类型的身份字段" style="width:100%"><el-option v-for="binding in staffBindings" :key="binding.name" :value="binding.name" :label="`${binding.name} ← ${binding.path}`" /></el-select></el-form-item>
           <el-form-item label="身份服务标识" required><el-input v-model="studio.identityProvider" placeholder="uap，与 Studio 端配置一致" maxlength="64" /></el-form-item>
           <el-form-item label="启用反馈入口"><el-switch v-model="studio.enabled" /><span class="muted" style="margin-left:12px">同一时间只启用一个 Studio 连接；保存后立即生效。</span></el-form-item>
+<el-collapse v-if="studio.accessPolicies"><el-collapse-item v-for="(label, action) in STUDIO_ACTION_LABELS" :key="action" :title="`${label} · 人员授权`" :name="action"><AccessPolicyForm v-model="studio.accessPolicies[action]" :fixed-binding="studio.staffCodeBinding" /></el-collapse-item></el-collapse>
           <div class="auth-guide">
             <strong>Skill 反馈入口</strong><p><code>{{ gatewayOrigin }}/open/dataskill/feedback</code></p>
             <p v-if="selectedIdentity">个人凭据 Header：{{ selectedIdentity.inputHeader }}；前缀：{{ selectedIdentity.inputPrefix || '无' }}。UAP 返回的工号须与 Studio 用户名一致。</p>

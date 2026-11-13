@@ -99,9 +99,12 @@ async function main() {
         yield row
       }
     }
-    await writeRows('configuration/apis.jsonl', decoded('api', ['user_agents', 'params', 'fields', 'filters', 'key_fields', 'external_auth', 'xingchen'], ['external_auth', 'xingchen']))
+    await writeRows('configuration/apis.jsonl', decoded('api', ['user_agents', 'params', 'fields', 'filters', 'key_fields', 'external_auth', 'xingchen', 'access_policy'], ['external_auth', 'xingchen']))
     await writeRows('configuration/connections.jsonl', decoded('connection', ['config'], ['config']))
     await writeRows('configuration/datasources.jsonl', decoded('datasource', [], ['password']))
+    await writeRows('configuration/directory.jsonl', decoded('staff_directory', ['config'], ['config']))
+    await writeRows('analysis/staff_members.jsonl', decoded('staff_member', ['data'], []))
+    await writeRows('analysis/directory_sync.jsonl', decoded('directory_sync', ['summary', 'candidate'], []))
     await writeRows('analysis/api_rows.jsonl', decoded('api_row', ['data'], []))
     progress('analysis', '正在整理全部调用日志与统计')
     function* requests() {

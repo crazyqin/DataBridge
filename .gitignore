@@ -9,3 +9,5 @@ release/*.tar.gz
 .env
 .env.*
 .idea/
+
+/dm_staff_info.xlsx

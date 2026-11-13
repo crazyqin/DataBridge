@@ -50,7 +50,7 @@ test('DataSkill forwards verified staff, scopes status calls, and never stores t
   const app = createApp({ config, db, auth, sources, apis, logs })
   assert.equal((await app.request('/open/dataskill/feedback', {method:'POST',body:'{}'})).status, 503)
   const studioSettings = { baseUrl: studioUrl, serviceToken: 'server-only-token-32-characters-long',
-    authConnectionId: connection.id, staffCodeBinding: '_auth_staff_code', identityProvider: 'uap', enabled: false }
+    authConnectionId: connection.id, staffCodeBinding: '_auth_staff_code', accessPolicies: Object.fromEntries(['feedback', 'status', 'withdraw', 'skill-check', 'skill-download'].map(key => [key, { enabled: false }])), identityProvider: 'uap', enabled: false }
   let integration = apis.connections.save(undefined, {name:'Studio', kind:'DATASKILL', config: studioSettings})
   assert.equal((await app.request('/open/dataskill/feedback', {method:'POST',body:'{}'})).status, 503)
   integration = apis.connections.save(integration.id, {name:'Studio',kind:'DATASKILL',version:integration.version,config:{...studioSettings,enabled:true}})
@@ -92,7 +92,7 @@ test('DataSkill forwards verified staff, scopes status calls, and never stores t
     assert.throws(() => apis.connections.remove(connection.id), /DataSkill/)
     assert.throws(() => apis.connections.save(connection.id, { name: 'uap', kind: 'EXTERNAL_AUTH', version: 1,
       config: { ...settings, bindings: [] } }), /DataSkill/)
-    assert.equal((db.prepare('SELECT count(*) AS n FROM request_detail_log').get() as {n:number}).n, 0)
+    assert.doesNotMatch(JSON.stringify(db.prepare('SELECT detail FROM request_detail_log').all()), /sensitive SQL|personal-A|server-only-token|rotated-service-token|99999/)
     assert.equal((db.prepare('SELECT count(*) AS n FROM request_auth_log').get() as {n:number}).n, 0)
     const logText = JSON.stringify(logs.list({}))
     assert.doesNotMatch(logText, /sensitive SQL|personal-A|server-only-token|rotated-service-token|99999/)
@@ -120,7 +120,7 @@ test('Studio connection management masks credentials, preserves them on edit, an
       url:'http://127.0.0.1/verify',method:'POST',inputHeader:'Authorization',inputPrefix:'Bearer ',tokenLocation:'header',tokenName:'Authorization',tokenPrefix:'Bearer ',
       successPath:'active',successValue:true,bindings:[{name:'_auth_staff',path:'staff',type:'string'}]}})
     const definition = {name:'Team Studio',kind:'DATASKILL',config:{baseUrl:'https://studio.example.invalid',serviceToken:'synthetic-service-token-long-enough',
-      authConnectionId:identity.id,staffCodeBinding:'_auth_staff',identityProvider:'uap',enabled:true}}
+      authConnectionId:identity.id,staffCodeBinding:'_auth_staff',accessPolicies: Object.fromEntries(['feedback', 'status', 'withdraw', 'skill-check', 'skill-download'].map(key => [key, { enabled: false }])),identityProvider:'uap',enabled:true}}
     assert.equal((await app.request('/admin/connections',{method:'POST',body:JSON.stringify(definition)})).status,401)
     await auth.bootstrap()
     const token = await auth.login('admin','synthetic-admin-password','test')
@@ -166,7 +166,7 @@ test('Studio connections reject missing or unsuitable UAP fields and invalid ser
     const auth = apis.connections.save(undefined,{name:'UAP',kind:'EXTERNAL_AUTH',config:{url:'http://127.0.0.1/identity',
       method:'POST',inputHeader:'Authorization',tokenLocation:'header',tokenName:'Authorization',successPath:'active',successValue:true,
       bindings:[{name:'_auth_staff',path:'staff',type:'integer'}]}})
-    const value={baseUrl:'https://studio.example.invalid',serviceToken:'synthetic-service-token-long-enough',authConnectionId:auth.id,staffCodeBinding:'_auth_staff',identityProvider:'uap',enabled:true}
+    const value={baseUrl:'https://studio.example.invalid',serviceToken:'synthetic-service-token-long-enough',authConnectionId:auth.id,staffCodeBinding:'_auth_staff',accessPolicies: Object.fromEntries(['feedback', 'status', 'withdraw', 'skill-check', 'skill-download'].map(key => [key, { enabled: false }])),identityProvider:'uap',enabled:true}
     const save = (changes:JsonObject={}) => apis.connections.save(undefined,{name:'Studio',kind:'DATASKILL',config:{...value,...changes}})
     assert.throws(()=>save(),/string/)
     assert.throws(()=>save({serviceToken:''}),/凭据/)

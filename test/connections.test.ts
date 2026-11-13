@@ -41,7 +41,7 @@ function profiles(f: ReturnType<typeof fixture>, url = 'http://127.0.0.1:1') {
   return { auth, platform }
 }
 function apiDefinition(authId: number, platformId: number, suffix = 'one'): JsonObject {
-  return { name: 'Agent ' + suffix, code: 'agent_' + suffix, path: '/open/' + suffix, method: 'POST', auth: 'EXTERNAL', mode: 'XINGCHEN',
+  return { name: 'Agent ' + suffix, code: 'agent_' + suffix, path: '/open/' + suffix, method: 'POST', auth: 'EXTERNAL', accessPolicy: { enabled: false }, mode: 'XINGCHEN',
     authConnectionId: authId, xingchenConnectionId: platformId, xingchen: appSettings(), params: [{ name: 'q', type: 'string', required: true }], enabled: true }
 }
 
@@ -125,20 +125,20 @@ test('identity profiles expose reusable fields, but each API extracts only the o
     const { auth, platform } = profiles(f)
     const source = f.sources.save(undefined, { name: 'unused', host: '127.0.0.1', port: 1, database: 'unused', username: 'unused', password: 'unused' })
     const sql = f.apis.save(undefined, { name: 'SQL', code: 'sql', path: '/open/sql', mode: 'REALTIME', datasourceId: source.id,
-      auth: 'EXTERNAL', authConnectionId: auth.id, sql: 'SELECT :_auth_staff AS staff' })
+      auth: 'EXTERNAL', accessPolicy: { enabled: false }, authConnectionId: auth.id, sql: 'SELECT :_auth_staff AS staff' })
     assert.deepEqual(f.apis.identityConfig(sql)!.bindings.map(binding => binding.name), ['_auth_staff'])
     const agent = f.apis.save(undefined, apiDefinition(auth.id, platform.id))
     assert.deepEqual(f.apis.identityConfig(agent)!.bindings.map(binding => binding.name), ['_auth_staff'])
     const manual = f.apis.save(undefined, { name: 'Local', code: 'local', path: '/open/local', mode: 'MANUAL',
-      auth: 'EXTERNAL', authConnectionId: auth.id, fields: [{ name: 'id', type: 'string' }] })
+      auth: 'EXTERNAL', accessPolicy: { enabled: false }, authConnectionId: auth.id, fields: [{ name: 'id', type: 'string' }] })
     assert.deepEqual(f.apis.identityConfig(manual)!.bindings, [])
     const snapshot = { name: 'Snapshot', code: 'snapshot', path: '/open/snapshot', mode: 'SNAPSHOT', datasourceId: source.id,
-      auth: 'EXTERNAL', authConnectionId: auth.id, sql: "SELECT 'one' AS id", keyFields: ['id'], cron: '0 0 * * * *' }
+      auth: 'EXTERNAL', accessPolicy: { enabled: false }, authConnectionId: auth.id, sql: "SELECT 'one' AS id", keyFields: ['id'], cron: '0 0 * * * *' }
     assert.deepEqual(f.apis.identityConfig(f.apis.save(undefined, snapshot))!.bindings, [])
     assert.throws(() => f.apis.validate({ ...snapshot, sql: 'SELECT :_auth_staff AS id' }), /不能包含参数/,
       'background synchronization has no caller identity even when the published API uses shared authentication')
     assert.throws(() => f.apis.save(undefined, { name: 'Bad SQL', code: 'bad', path: '/open/bad', mode: 'REALTIME', datasourceId: source.id,
-      auth: 'EXTERNAL', authConnectionId: auth.id, sql: 'SELECT :_auth_missing AS staff' }), /未定义/)
+      auth: 'EXTERNAL', accessPolicy: { enabled: false }, authConnectionId: auth.id, sql: 'SELECT :_auth_missing AS staff' }), /未定义/)
     assert.throws(() => f.apis.connections.save(auth.id, { ...asJson(auth), config: { ...authSettings(), bindings: [] } }), status(409))
     const initial = f.apis.connections.list().length
     assert.throws(() => f.apis.save(undefined, { ...apiDefinition(auth.id, platform.id), authConnectionId: null, externalAuth: authSettings('http://new.example.invalid/verify') }), status(409))
@@ -251,7 +251,7 @@ test('v1.1 databases migrate atomically, deduplicate shared settings and preserv
       ALTER TABLE api DROP COLUMN auth_connection_id; ALTER TABLE api DROP COLUMN xingchen_connection_id;
       DROP TABLE request_detail_log; ALTER TABLE request_log DROP COLUMN method;
       ALTER TABLE request_log DROP COLUMN path; ALTER TABLE request_log DROP COLUMN status;
-      DROP TABLE connection; PRAGMA user_version = 6;`)
+      DROP TABLE connection; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; PRAGMA user_version = 6;`)
     await sources.closeAll(); db.close()
     db = openDb(config.dbFile); sources = new Sources(db, config); apis = new Apis(db, sources, config)
     assert.equal(apis.connections.list().length, 2)

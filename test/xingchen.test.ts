@@ -41,7 +41,7 @@ function fixture() {
   } }
 }
 const definition = (url: string): JsonObject => ({
-  name: 'test-agent', code: 'test_agent', path: '/open/test-agent', method: 'POST', mode: 'XINGCHEN', auth: 'EXTERNAL', enabled: true,
+  name: 'test-agent', code: 'test_agent', path: '/open/test-agent', method: 'POST', mode: 'XINGCHEN', auth: 'EXTERNAL', accessPolicy: { enabled: false }, enabled: true,
   externalAuth: { url: `${url}/identity`, method: 'GET', inputHeader: 'Authorization', inputPrefix: 'Bearer ',
     tokenLocation: 'header', tokenName: 'Authorization', tokenPrefix: 'Bearer ', successPath: 'active', successValue: true,
     bindings: [{ name: '_auth_staff_code', path: 'data.staffCode', type: 'string' }] },

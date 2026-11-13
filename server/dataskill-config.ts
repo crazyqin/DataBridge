@@ -1,8 +1,13 @@
 import { bad } from './errors.ts'
 import { body, flag, integer, text } from './input.ts'
 import type { Json } from './json.ts'
+import { validatePolicy, disabledPolicy, type AccessPolicy } from './access.ts'
+
+export const STUDIO_ACTIONS = ['feedback', 'status', 'withdraw', 'skill-check', 'skill-download'] as const
+export type StudioAction = typeof STUDIO_ACTIONS[number]
 
 export interface DataSkillConfig {
+  accessPolicies?: Record<StudioAction, AccessPolicy>
   baseUrl: string
   serviceToken: string
   authConnectionId: number
@@ -25,6 +30,13 @@ export function validateDataSkill(value: Json | undefined, previous?: DataSkillC
     throw bad('Studio 服务凭据需为 32 到 4096 个可打印字符，新建时必须填写')
   }
   return {
+    accessPolicies: Object.fromEntries(STUDIO_ACTIONS.map(action => {
+      const policies = input.accessPolicies === undefined ? undefined : body(input.accessPolicies)
+      const policy = validatePolicy(policies?.[action] ?? (previous?.accessPolicies?.[action] as unknown as Json | undefined)
+        ?? (previous ? disabledPolicy() as unknown as Json : { enabled: true }))
+      policy.staffBinding = String(input.staffCodeBinding ?? '')
+      return [action, policy]
+    })) as Record<StudioAction, AccessPolicy>,
     baseUrl, serviceToken,
     authConnectionId: integer(input, 'authConnectionId', 'UAP 身份服务连接', 1, Number.MAX_SAFE_INTEGER),
     staffCodeBinding: text(input, 'staffCodeBinding', '工号映射', { max: 63 }),

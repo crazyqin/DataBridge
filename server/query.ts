@@ -54,7 +54,7 @@ function sourceError(error: unknown): HttpError {
   return new SourceError(502, '数据源查询失败', detail)
 }
 
-export interface QueryResult { rows: Record<string, Json>[]; truncated: boolean }
+export interface QueryResult { rows: Record<string, Json>[]; truncated: boolean; columns: string[] }
 
 /** Runs one read-only statement and returns at most maxRows rows. */
 export async function runQuery(pool: pg.Pool, text: string, values: (string | null)[],
@@ -86,6 +86,7 @@ export async function runQuery(pool: pg.Pool, text: string, values: (string | nu
     if (duplicate) throw new HttpError(400, `查询结果包含重复的列名 ${duplicate}`)
     const truncated = rows.length > options.maxRows
     return {
+      columns: names,
       truncated,
       rows: rows.slice(0, options.maxRows).map(row => Object.fromEntries(names.map((name, i) => [name, row[i]]))),
     }

@@ -4,6 +4,9 @@ import type { Connections } from './connections.ts'
 import type { ExternalAuth } from './external-auth.ts'
 import { bad, HttpError } from './errors.ts'
 import { isObject, parse, stringify, type JsonObject } from './json.ts'
+import { disabledPolicy, type AccessDecision } from './access.ts'
+import type { Directory } from './directory.ts'
+import type { StudioAction } from './dataskill-config.ts'
 
 const UUID = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 const RESERVED = ['actor', 'staff_code', '_auth_staff_code', 'user_id', 'submitted_by_user_id', 'username', 'provider', 'request_id']
@@ -13,11 +16,13 @@ export class DataSkill {
   private readonly config: Config
   private readonly connections: Connections
   private readonly auth: ExternalAuth
-  constructor(config: Config, connections: Connections, auth: ExternalAuth) {
+  private readonly directory: Directory
+  constructor(config: Config, connections: Connections, auth: ExternalAuth, directory: Directory) {
+    this.directory = directory
     this.config = config; this.connections = connections; this.auth = auth
   }
 
-  async forward(request: Request, requestId: string): Promise<Response> {
+  async forward(request: Request, requestId: string, diagnostic?: (decision: AccessDecision) => void): Promise<Response> {
     const config = this.connections.dataSkill()
     if (!config) throw new HttpError(503, '请在连接管理中配置并启用 DataSkill Studio')
     const url = new URL(request.url)
@@ -35,6 +40,9 @@ export class DataSkill {
     const identity = await this.auth.verify({ ...auth, bindings: [binding] }, request.headers.get(auth.inputHeader) ?? undefined)
     const staff = identity[config.staffCodeBinding]
     if (typeof staff !== 'string' || !staff.trim() || staff.length > 64) throw new HttpError(502, '身份服务返回无效工号')
+    const action: StudioAction = target.endsWith('/status') ? 'status' : target.endsWith('/withdraw') ? 'withdraw'
+      : target.startsWith('skill-download/') ? 'skill-download' : target as StudioAction
+    this.directory.authorize({ ...(config.accessPolicies?.[action] ?? disabledPolicy()), staffBinding: config.staffCodeBinding }, identity, config.version, diagnostic)
     let payload: JsonObject = {}
     if (request.method === 'POST') {
       const raw = await request.text()

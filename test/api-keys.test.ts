@@ -35,7 +35,7 @@ const legacyKeys = `DROP TRIGGER api_key_access_delete; DROP TRIGGER api_key_acc
   CREATE TABLE legacy_api_key (id INTEGER PRIMARY KEY, name TEXT NOT NULL, prefix TEXT NOT NULL,
     hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT);
   INSERT INTO legacy_api_key SELECT id, name, prefix, hash, created_at, last_used_at FROM api_key;
-  DROP TABLE api_key; ALTER TABLE legacy_api_key RENAME TO api_key; PRAGMA user_version = 9;`
+  DROP TABLE api_key; ALTER TABLE legacy_api_key RENAME TO api_key; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; PRAGMA user_version = 9;`
 
 test('keys authorize exact APIs and HTTP methods, deny missing grants before querying, and log 403', async () => {
   const f = fixture()

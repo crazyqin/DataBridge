@@ -155,6 +155,17 @@ const MIGRATIONS = [
     UPDATE api_key SET version = version + 1 WHERE id IN (SELECT key_id FROM api_key_access WHERE api_id = OLD.id);
     DELETE FROM api_key_access WHERE api_id = OLD.id;
   END;`,
+  `ALTER TABLE api ADD COLUMN access_policy TEXT NOT NULL DEFAULT '{"enabled":false,"staffBinding":"","allow":[],"deny":[]}';
+  CREATE TABLE staff_directory (
+    id INTEGER PRIMARY KEY CHECK (id = 1), config TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1, snapshot_version INTEGER NOT NULL DEFAULT 0, synced_at TEXT
+  );
+  CREATE TABLE staff_member (staff_no TEXT PRIMARY KEY, data TEXT NOT NULL);
+  CREATE TABLE directory_sync (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,
+    trigger TEXT NOT NULL, status TEXT NOT NULL, summary TEXT, error TEXT, candidate TEXT,
+    config_version INTEGER NOT NULL, source_version INTEGER NOT NULL, baseline_version INTEGER NOT NULL
+  );`,
 ]
 
 export type Db = DatabaseSync

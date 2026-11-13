@@ -1,12 +1,14 @@
 import type { Api } from './apis.ts'
+import type { AccessDecision } from './access.ts'
 import { STATUS_CODES } from 'node:http'
 import { diagnosticPreview, plainDiagnostics } from './auth-diagnostics.ts'
 import { parse, stringify, type JsonObject } from './json.ts'
 
-export type CallStage = 'request' | 'routing' | 'access' | 'identity' | 'query' | 'forward' | 'response' | 'stream'
+export type CallStage = 'request' | 'routing' | 'access' | 'identity' | 'authorization' | 'query' | 'forward' | 'response' | 'stream'
 export interface CallStreamSummary { bytes: number; events: number; lastEvent: string | null }
 
 export interface CallRequestTrace {
+  authorization?: AccessDecision
   method: string
   path: string
   status: number

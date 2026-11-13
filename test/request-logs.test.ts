@@ -239,7 +239,7 @@ test('v1.2.1 logs upgrade without losing summaries and remain explicitly without
     f.db.exec(`DROP TRIGGER api_key_access_delete; DROP TRIGGER api_key_access_auth; DROP TABLE api_key_access;
       DROP TABLE api_project; DROP TABLE project; ALTER TABLE api DROP COLUMN project_version;
       DROP TABLE request_detail_log; ALTER TABLE request_log DROP COLUMN method;
-      ALTER TABLE request_log DROP COLUMN path; ALTER TABLE request_log DROP COLUMN status; PRAGMA user_version = 7;`)
+      ALTER TABLE request_log DROP COLUMN path; ALTER TABLE request_log DROP COLUMN status; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; PRAGMA user_version = 7;`)
     const upgraded = openDb(f.config.dbFile)
     try {
       const logs = new Logs(upgraded), item = logs.list({}).items[0]

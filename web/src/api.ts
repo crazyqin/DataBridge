@@ -1,5 +1,16 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { createRequestTrace, type RequestTrace } from './request-trace'
+export interface DepartmentScope { path: (string | null)[]; descendants: boolean }
+export interface AccessRule { staffNos: string[]; departments: DepartmentScope[]; employmentUnified: string[]; employmentLocal: string[]; posts: string[] }
+export interface AccessPolicy { enabled: boolean; staffBinding: string; allow: AccessRule[]; deny: AccessRule[] }
+export interface AccessDecision { allowed: boolean; reason: string; staffNo: string | null; rule: string | null; directoryVersion: number; policyVersion: number | null }
+export interface StaffMember { staffNo: string; name: string; department: (string | null)[]; employmentUnified: string | null; employmentLocal: string | null; posts: string[] }
+export interface DirectoryConfig {
+  datasourceId: number; sql: string; cron: string; timezone: string; scheduled: boolean; timeoutSeconds: number; maxRows: number; changeThreshold: number
+  mapping: { staffNo: string; name: string; departments: string[]; employmentUnified: string; employmentLocal: string; posts: string[] }
+}
+export const defaultAccessPolicy = (enabled = true): AccessPolicy => ({ enabled, staffBinding: '', allow: [], deny: [] })
+export const STUDIO_ACTION_LABELS = { feedback: '提交反馈', status: '查询状态', withdraw: '撤回反馈', 'skill-check': '检查 Skill', 'skill-download': '下载 Skill' }
 
 export type FieldType = 'string' | 'integer' | 'decimal' | 'boolean' | 'date' | 'datetime'
 export interface Field { name: string; type: FieldType; required: boolean }
@@ -32,8 +43,9 @@ export interface ExternalAuthTrace {
   checks: { path: string; expected: unknown; actual: unknown; exists: boolean; matched: boolean }[]
 }
 
-export type CallStage = 'request' | 'routing' | 'access' | 'identity' | 'query' | 'forward' | 'response' | 'stream'
+export type CallStage = 'request' | 'routing' | 'access' | 'identity' | 'authorization' | 'query' | 'forward' | 'response' | 'stream'
 export interface CallRequestTrace {
+  authorization?: AccessDecision
   method: string; path: string; status: number; responseType: string | null
   headers: string; headersTruncated: boolean; query: string; queryTruncated: boolean
   body: string | null; bodyTruncated: boolean; bodyNote: string | null
@@ -50,11 +62,13 @@ export interface CallRequestTrace {
 export interface CallDetails { request: CallRequestTrace | null; externalAuth: ExternalAuthTrace | null }
 
 export class RequestError extends Error {
+  readonly authorization?: AccessDecision
   readonly externalAuthTrace?: ExternalAuthTrace
 
-  constructor(message: string, externalAuthTrace?: ExternalAuthTrace) {
+  constructor(message: string, externalAuthTrace?: ExternalAuthTrace, authorization?: AccessDecision) {
     super(message)
     this.externalAuthTrace = externalAuthTrace
+    this.authorization = authorization
   }
 }
 
@@ -75,6 +89,7 @@ export const defaultXingchen = (): XingchenConfig => ({
 
 export type ConnectionKind = 'EXTERNAL_AUTH' | 'XINGCHEN' | 'DATASKILL'
 export interface DataSkillConfig {
+  accessPolicies?: Record<keyof typeof STUDIO_ACTION_LABELS, AccessPolicy>
   baseUrl: string; serviceToken: string; authConnectionId: number | null
   staffCodeBinding: string; identityProvider: string; enabled: boolean
 }
@@ -95,6 +110,7 @@ export interface Project {
 }
 
 export interface Api {
+  accessPolicy: AccessPolicy
   projectIds: number[]
   projectVersion?: number
   id?: number; name: string; code: string; path: string; method: 'GET' | 'POST'; auth: 'API_KEY' | 'PUBLIC' | 'EXTERNAL'
@@ -137,7 +153,7 @@ export async function request<T = unknown>(path: string, options: Options = {}):
     if (!response.ok) {
       const message = result?.message || `请求失败 (${response.status})`
       if (!silent) ElMessage.error(message)
-      throw new RequestError(message, result?.externalAuthTrace)
+      throw new RequestError(message, result?.externalAuthTrace, result?.authorization)
     }
     if (response.status === 204) return undefined as T
     if (result === undefined) {

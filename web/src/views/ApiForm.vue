@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
-import { confirm, defaultXingchen, formatTimeInZone, MODE_LABELS, request, RequestError, type Api, type ConnectionKind, type ConnectionSummary, type Datasource, type ExternalAuthTrace as AuthTrace } from '../api'
+import { confirm, defaultAccessPolicy, defaultXingchen, formatTimeInZone, MODE_LABELS, request, RequestError, type Api, type ConnectionKind, type ConnectionSummary, type Datasource, type ExternalAuthTrace as AuthTrace } from '../api'
 import XingchenForm from './XingchenForm.vue'
 import FieldTable from './FieldTable.vue'
 import ConnectionEditor from './ConnectionEditor.vue'
@@ -11,12 +11,15 @@ import type { RequestTrace } from '../request-trace'
 import { completeTestParams } from '../test-params'
 import SyncHistoryDialog from './SyncHistoryDialog.vue'
 import ProjectEditor from './ProjectEditor.vue'
-import type { Project } from '../api'
+import AccessPolicyForm from './AccessPolicyForm.vue'
+import type { Project, AccessDecision } from '../api'
+const authorization = ref<AccessDecision>()
 
 const props = defineProps<{ api: Api | null; initialProjectId?: number }>()
 const emit = defineEmits<{ close: [] }>()
 
 const blank: Api = {
+  accessPolicy: defaultAccessPolicy(),
   projectIds: props.initialProjectId ? [props.initialProjectId] : [],
   name: '', code: '', path: '/open/', method: 'GET', auth: 'API_KEY', userAgents: [], mode: 'REALTIME', datasourceId: null,
   externalAuth: null, xingchen: null, authConnectionId: null, xingchenConnectionId: null,
@@ -69,12 +72,13 @@ async function connectionSaved(connection: { id: number; kind: ConnectionKind })
   else form.value.xingchenConnectionId = connection.id
 }
 watch(selectedAuth, connection => {
+  if (!form.value.accessPolicy.staffBinding && connection) form.value.accessPolicy.staffBinding = connection.bindings.find(b => b.type === 'string')?.name ?? ''
   const app = form.value.xingchen
   if (app && connection && !connection.bindings.some(binding => binding.name === app.staffCodeBinding && binding.type === 'string')) {
     app.staffCodeBinding = connection.bindings.find(binding => binding.type === 'string')?.name ?? ''
   }
 })
-const result = ref<{ elapsedMs: number; count?: number; rows?: unknown[]; response?: unknown; externalAuthTrace?: AuthTrace }>()
+const result = ref<{ elapsedMs: number; count?: number; rows?: unknown[]; response?: unknown; externalAuthTrace?: AuthTrace; authorization?: AccessDecision }>()
 
 const sourced = computed(() => ['REALTIME', 'SNAPSHOT'].includes(form.value.mode))
 const forwarding = computed(() => form.value.mode === 'XINGCHEN')
@@ -118,6 +122,7 @@ function payload(): Api {
   return {
     ...api,
     externalAuth: null,
+    accessPolicy: api.auth === 'EXTERNAL' ? api.accessPolicy : defaultAccessPolicy(false),
     authConnectionId: api.auth === 'EXTERNAL' ? api.authConnectionId : null,
     xingchenConnectionId: forwarding.value ? api.xingchenConnectionId : null,
     xingchen: forwarding.value && api.xingchen ? { ...api.xingchen, baseUrl: '' } : null,
@@ -183,6 +188,7 @@ async function reload() {
 
 /** Tests the form as it is now; parameters are sent verbatim so large numbers stay exact. */
 async function test() {
+  authorization.value = undefined
   result.value = undefined
   authTrace.value = undefined
   requestTrace.value = undefined
@@ -205,8 +211,9 @@ async function test() {
       onTrace: trace => { requestTrace.value = trace },
     })
     authTrace.value = result.value?.externalAuthTrace
+    authorization.value = result.value?.authorization
   } catch (error) {
-    if (error instanceof RequestError) { authTrace.value = error.externalAuthTrace; testError.value = error.message; diagnostics.value = ['auth', 'request'] }
+    if (error instanceof RequestError) { authorization.value = error.authorization; authTrace.value = error.externalAuthTrace; testError.value = error.message; diagnostics.value = ['auth', 'request'] }
     else ElMessage.error(error instanceof Error ? error.message : '测试请求失败')
   } finally {
     testing.value = false
@@ -273,6 +280,7 @@ onMounted(async () => {
             </div>
             <div class="field-help">基础地址由连接统一提供。应用 ID、密钥和公钥在业务配置中填写。</div>
           </el-form-item>
+          <AccessPolicyForm v-if="form.auth === 'EXTERNAL'" v-model="form.accessPolicy" :bindings="selectedAuth?.bindings" :fixed-binding="forwarding ? form.xingchen?.staffCodeBinding : undefined" />
           <el-alert v-if="form.auth === 'API_KEY'" title="保存接口后，请在「配置中心 → 调用密钥」中为 Key 授权此接口。调用方需在 X-API-Key 请求头中携带已获授权的 Key。" type="info" :closable="false" />
           <el-alert v-if="form.auth === 'PUBLIC'" title="启用后，任何能访问此地址的调用方都可以获取数据。" type="info" :closable="false" />
         </section>
@@ -316,15 +324,16 @@ onMounted(async () => {
         <section class="editor-section">
           <div class="section-heading"><h3>{{ form.mode === 'MANUAL' ? '发布前确认' : '测试当前配置' }}</h3><span v-if="sourced || forwarding">无需先保存{{ forwarding ? ' · 星辰测试使用 blocking 模式' : '' }}</span></div>
           <div class="publish-preview"><span class="method-badge">{{ form.method }}</span><code>{{ form.path }}</code><el-tag type="info">{{ MODE_LABELS[form.mode] }}</el-tag></div>
-          <el-form-item v-if="form.auth === 'EXTERNAL' && (sourced || forwarding)" label="本次测试的身份凭证"><el-input v-model="testCredential" type="password" clearable autocomplete="off" placeholder="输入身份凭证（不含前缀）" /><div class="field-help">所选身份服务：{{ selectedAuth?.name || '尚未选择' }} · 执行测试时会先验证身份。凭证在当前编辑页保留，可反复测试。</div></el-form-item>
+          <el-form-item v-if="form.auth === 'EXTERNAL'" label="本次测试的身份凭证"><el-input v-model="testCredential" type="password" clearable autocomplete="off" placeholder="输入身份凭证（不含前缀）" /><div class="field-help">所选身份服务：{{ selectedAuth?.name || '尚未选择' }} · 执行测试时会先验证身份。凭证在当前编辑页保留，可反复测试。</div></el-form-item>
           <el-form-item v-if="parameterized" label="测试参数（JSON）">
             <el-input v-model="testParams" type="textarea" :autosize="{ minRows: 4, maxRows: 14 }" class="mono" placeholder="{}" />
             <div class="field-help">已按业务参数生成模板，修改值即可；补齐模板会保留已填写内容。<el-button link type="primary" @click="fillTestParams(true)">补齐参数模板</el-button></div>
           </el-form-item>
-          <div v-if="sourced || forwarding" class="toolbar">
-            <el-button type="primary" :loading="testing" @click="test">{{ forwarding ? '测试星辰转发' : '执行 SQL 测试' }}</el-button>
+          <div v-if="sourced || forwarding || form.auth === 'EXTERNAL'" class="toolbar">
+            <el-button type="primary" :loading="testing" @click="test">{{ forwarding ? '测试星辰转发' : sourced ? '执行 SQL 测试' : '测试身份与权限' }}</el-button>
             <span v-if="result" class="result-status">{{ result.count === undefined ? '转发完成' : `返回 ${result.count} 行` }} · {{ result.elapsedMs }} ms</span>
           </div>
+          <el-alert v-if="authorization" :title="`${authorization.allowed ? '允许' : '拒绝'}：${authorization.reason} · ${authorization.rule ?? '—'} · 目录版本 ${authorization.directoryVersion}`" :type="authorization.allowed ? 'success' : 'warning'" :closable="false" />
           <el-alert v-if="testError" :title="testError" type="error" :closable="false" show-icon />
           <div v-if="form.mode === 'MANUAL'" class="info-strip">保存后前往「数据维护」录入数据，再启用接口。</div>
           <pre v-if="result" class="result">{{ JSON.stringify(result.response ?? result.rows, null, 2) }}</pre>

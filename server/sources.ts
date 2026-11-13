@@ -92,6 +92,8 @@ export class Sources {
 
   remove(id: number) {
     this.row(id)
+    const directory = this.db.prepare('SELECT config FROM staff_directory WHERE id = 1').get()
+    if (directory && JSON.parse(decrypt(this.config.secretKey, String(directory.config))).datasourceId === id) throw conflict('数据源正在被人员目录使用，无法删除')
     try {
       this.db.prepare('DELETE FROM datasource WHERE id = ?').run(id)
     } catch (error) {

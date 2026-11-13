@@ -158,7 +158,7 @@ test('v1.2.8 databases upgrade with ungrouped APIs and retain rows and open rout
     const original = f.apis.save(undefined, definition)
     f.apis.createRow(original.id, { id: 'legacy-row' })
     f.db.exec(`DROP TRIGGER api_key_access_delete; DROP TRIGGER api_key_access_auth; DROP TABLE api_key_access;
-      DROP TABLE api_project; DROP TABLE project; ALTER TABLE api DROP COLUMN project_version; PRAGMA user_version = 8;`)
+      DROP TABLE api_project; DROP TABLE project; ALTER TABLE api DROP COLUMN project_version; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; PRAGMA user_version = 8;`)
     const upgraded = openDb(f.config.dbFile)
     try {
       const apis = new Apis(upgraded, f.sources, f.config)

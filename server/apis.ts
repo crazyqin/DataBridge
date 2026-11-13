@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { Cron } from 'croner'
 import { Connections } from './connections.ts'
 import { Projects } from './projects.ts'
+import { Directory } from './directory.ts'
+import { validatePolicy, type AccessPolicy } from './access.ts'
 import { decrypt, encrypt, type Config } from './config.ts'
 import { now, transaction, type Db } from './db.ts'
 import { bad, conflict, forbidden, HttpError, notFound } from './errors.ts'
@@ -18,6 +20,7 @@ export const MODES = ['REALTIME', 'SNAPSHOT', 'MANUAL', 'XINGCHEN'] as const
 export type Mode = (typeof MODES)[number]
 
 export interface Api {
+  accessPolicy: AccessPolicy
   id: number
   name: string
   code: string
@@ -66,6 +69,7 @@ function withRemark(row: Row, remark: string): Row {
 }
 
 interface ApiRow {
+  access_policy: string
   project_version: number
   id: number; name: string; code: string; path: string; method: Api['method']; auth: Api['auth']; user_agents: string
   external_auth: string | null; xingchen: string | null; auth_connection_id: number | null; xingchen_connection_id: number | null
@@ -80,6 +84,7 @@ const toApi = (row: ApiRow, config: Config, connections: Connections, projects: 
   const platform = row.xingchen_connection_id ? connections.get(row.xingchen_connection_id, 'XINGCHEN') : null
   const application = row.xingchen ? parse(decrypt(config.secretKey, row.xingchen)) as unknown as XingchenConfig : null
   return ({
+  accessPolicy: JSON.parse(row.access_policy),
   id: row.id, name: row.name, code: row.code, path: row.path, method: row.method, auth: row.auth,
   projectIds: projects.idsForApi(row.id), projectVersion: row.project_version,
   authConnectionId: row.auth_connection_id, xingchenConnectionId: row.xingchen_connection_id,
@@ -136,6 +141,7 @@ function toPg(value: Json): string | null {
 }
 
 export class Apis {
+  readonly directory: Directory
   readonly connections: Connections
   readonly projects: Projects
   private readonly jobs = new Map<number, Cron>()
@@ -150,6 +156,7 @@ export class Apis {
     this.config = config
     this.connections = new Connections(db, config)
     this.projects = new Projects(db)
+    this.directory = new Directory(db, sources, config)
     this.connections.migrateLegacy()
   }
 
@@ -231,7 +238,7 @@ export class Apis {
     const xingchenInput = xingchenConnectionId ? { ...(isObject(input.xingchen) ? input.xingchen : {}), ...this.connections.platform(xingchenConnectionId) } : input.xingchen
     const xingchen = mode === 'XINGCHEN' ? validateXingchen(xingchenInput, values.params, values.externalAuth) : null
     const authBindings = values.externalAuth?.bindings ?? []
-    if (authBindings.length && !parameters && !authConnectionId) throw bad('身份参数映射只支持实时查询或星辰转发；其他模式可仅验证身份')
+    if (authBindings.length && !parameters && !authConnectionId && !(isObject(input.accessPolicy) && input.accessPolicy.enabled)) throw bad('身份参数映射只支持实时查询或星辰转发；其他模式可仅验证身份')
     if (values.auth === 'EXTERNAL' && values.params.some(param => param.name.startsWith(AUTH_PARAM_PREFIX))) {
       throw bad(`${AUTH_PARAM_PREFIX} 开头的参数由外部身份验证提供，不能声明为请求参数`)
     }
@@ -241,7 +248,7 @@ export class Apis {
       const declared = [...values.params, ...(mode === 'REALTIME' ? authBindings : [])].map(param => param.name)
       const undeclared = used.find(name => !declared.includes(name))
       if (undeclared) throw bad(mode === 'SNAPSHOT' ? '定时同步的 SQL 不能包含参数' : `SQL 使用了未定义的参数 :${undeclared}`)
-      const unused = (authConnectionId ? values.params.map(param => param.name) : declared).find(name => !used.includes(name))
+      const unused = (authConnectionId ? values.params.map(param => param.name) : declared).find(name => !used.includes(name) && !(isObject(input.accessPolicy) && input.accessPolicy.enabled && input.accessPolicy.staffBinding === name))
       if (unused) throw bad(`参数 ${unused} 没有在 SQL 中使用`)
     }
     if (mode === 'MANUAL' && !values.fields.length) throw bad('手工维护模式需要至少一个字段')
@@ -262,11 +269,19 @@ export class Apis {
       }
       if (!next) throw bad('Cron 表达式永远不会触发')
     }
-    return { ...values, xingchen }
+    const accessPolicy = validatePolicy(input.accessPolicy)
+    if (values.auth !== 'EXTERNAL' && accessPolicy.enabled) throw bad('人员授权仅适用于外部身份验证')
+    if (accessPolicy.enabled) {
+      if (!authBindings.some(binding => binding.name === accessPolicy.staffBinding && binding.type === 'string')) throw bad('人员授权必须选择 string 类型的工号映射')
+      if (xingchen && xingchen.staffCodeBinding !== accessPolicy.staffBinding) throw bad('星辰转发与人员授权必须使用同一个工号映射')
+      if (values.enabled && !this.directory.get().snapshotVersion) throw bad('请先成功同步人员目录，再启用人员授权接口')
+    }
+    return { ...values, xingchen, accessPolicy }
   }
 
   save(id: number | undefined, input: JsonObject): Api {
-    const v = this.validate(input)
+    const v = this.validate({ ...input, accessPolicy: input.accessPolicy ?? (id !== undefined
+      ? this.get(id).accessPolicy as unknown as Json : { enabled: input.auth === 'EXTERNAL' }) })
     const time = now()
     const saved = transaction(this.db, () => {
       if (id !== undefined) {
@@ -288,6 +303,7 @@ export class Apis {
           params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, external_auth, xingchen, auth_connection_id, xingchen_connection_id, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
         const apiId = Number(result.lastInsertRowid)
+        this.db.prepare('UPDATE api SET access_policy = ? WHERE id = ?').run(JSON.stringify(v.accessPolicy), apiId)
         if (input.projectIds !== undefined) this.projects.assign(apiId, input.projectIds)
         return apiId
       }
@@ -304,6 +320,7 @@ export class Apis {
       } else if (v.mode === 'MANUAL' && stringify(current.fields) !== stringify(v.fields)) {
         this.migrateManualRows(id, v.fields)
       }
+      this.db.prepare('UPDATE api SET access_policy = ? WHERE id = ?').run(JSON.stringify(v.accessPolicy), id)
       return id
     })
     this.schedule(saved)
@@ -326,7 +343,8 @@ export class Apis {
   }
 
   setEnabled(id: number, enabled: boolean): Api {
-    this.get(id)
+    const current = this.get(id)
+    if (enabled) this.validate({ ...current, enabled } as unknown as JsonObject)
     this.db.prepare('UPDATE api SET enabled = ?, version = version + 1, updated_at = ? WHERE id = ?').run(enabled ? 1 : 0, now(), id)
     this.schedule(id)
     return this.get(id)
@@ -365,6 +383,7 @@ export class Apis {
   }
 
   stopSchedules() {
+    this.directory.stop()
     for (const job of this.jobs.values()) job.stop()
     this.jobs.clear()
   }
@@ -565,10 +584,11 @@ export class Apis {
   }
 
   /** A shared identity service can expose many fields; each API requires only what it uses. */
-  identityConfig(api: Pick<Api, 'mode' | 'sql' | 'xingchen' | 'externalAuth'>): ExternalAuthConfig | null {
+  identityConfig(api: Pick<Api, 'mode' | 'sql' | 'xingchen' | 'externalAuth'> & { accessPolicy?: AccessPolicy }): ExternalAuthConfig | null {
     if (!api.externalAuth) return null
     const names = api.mode === 'REALTIME' ? parseSql(api.sql!).names
       : api.mode === 'XINGCHEN' ? [api.xingchen?.staffCodeBinding] : []
+    if (api.accessPolicy?.enabled) names.push(api.accessPolicy.staffBinding)
     return { ...api.externalAuth, bindings: api.externalAuth.bindings.filter(binding => names.includes(binding.name)) }
   }
 

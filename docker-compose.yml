@@ -1,10 +1,10 @@
 services:
   databridge:
-    image: databridge:1.6.1
+    image: databridge:1.7.0
     build:
       context: .
       args:
-        DATABRIDGE_VERSION: 1.6.1
+        DATABRIDGE_VERSION: 1.7.0
         DATABRIDGE_BUILD_COMMIT: ${DATABRIDGE_BUILD_COMMIT:-unknown}
     platform: linux/amd64
     restart: unless-stopped

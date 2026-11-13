@@ -22,8 +22,10 @@ import type { ExternalAuthTrace } from './auth-diagnostics.ts'
 import { Xingchen } from './xingchen.ts'
 import { DataSkill } from './dataskill.ts'
 import { callDiagnostics } from './request-diagnostics.ts'
+import { validatePolicy, type AccessDecision } from './access.ts'
 
 type Env = { Variables: { requestId: string; user: string; externalAuthTrace: ExternalAuthTrace | undefined;
+  authorization: AccessDecision | undefined;
   callDiagnostic: ReturnType<typeof callDiagnostics> | undefined; completeCall: ((response: Response) => void) | undefined } }
 type Ctx = Context<Env>
 
@@ -58,7 +60,7 @@ function withDetail(error: unknown): never {
 export function createApp({ config, db, auth, sources, apis, logs, exports = new Exports(config) }: Services) {
   const app = new Hono<Env>()
   const externalAuth = new ExternalAuth(config.maxConcurrentQueries)
-  const dataskill = new DataSkill(config, apis.connections, externalAuth)
+  const dataskill = new DataSkill(config, apis.connections, externalAuth, apis.directory)
   const xingchen = new Xingchen(config.maxConcurrentQueries)
   let activeQueries = 0
 
@@ -96,9 +98,10 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
     const requestId = c.get('requestId')
     // Only authenticated administration tests receive verifier diagnostics.
     const externalAuthTrace = c.req.path.startsWith('/admin/') && c.get('user') ? c.get('externalAuthTrace') : undefined
+    const authorization = c.req.path.startsWith('/admin/') && c.get('user') ? c.get('authorization') : undefined
     if (error instanceof HttpError) {
       return send(c, { code: error.code, message: error.message, request_id: requestId,
-        ...(externalAuthTrace ? { externalAuthTrace } : {}) }, error.status, !!externalAuthTrace)
+        ...(externalAuthTrace ? { externalAuthTrace } : {}), ...(authorization ? { authorization } : {}) }, error.status, !!externalAuthTrace)
     }
     console.error(`request ${requestId} failed:`, error)
     return send(c, { code: 50001, message: '服务器内部错误', request_id: requestId,
@@ -189,6 +192,22 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
 
   // ---- shared connections ----
 
+  app.get('/admin/directory', c => admin(c, apis.directory.get()))
+  app.put('/admin/directory', async c => admin(c, apis.directory.save(await readJson(c))))
+  app.post('/admin/directory/preview', async c => admin(c, await apis.directory.preview(await readJson(c)).catch(withDetail)))
+  app.post('/admin/directory/sync', async c => admin(c, await apis.directory.sync().catch(withDetail)))
+  app.get('/admin/directory/history', c => admin(c, apis.directory.history(c.req.query('before') === undefined ? undefined : id(c.req.query('before')))))
+  const directoryPage = (c: Ctx) => integer({ page: Number(c.req.query('page') ?? 1) }, 'page', '页码', 1, 1_000_000)
+  app.get('/admin/directory/members', c => admin(c, apis.directory.members((c.req.query('search') ?? '').slice(0, 200), directoryPage(c))))
+  app.get('/admin/directory/options', c => admin(c, apis.directory.options()))
+  app.get('/admin/directory/history/:id/candidate', c => admin(c, apis.directory.candidate(id(c.req.param('id')), directoryPage(c))))
+  app.post('/admin/directory/history/:id/force', c => admin(c, apis.directory.force(id(c.req.param('id')))))
+  app.post('/admin/access/preview', async c => {
+    const input = await readJson(c)
+    if (typeof input.staffNo !== 'string' || !input.staffNo.trim() || input.staffNo.length > 300) throw bad('请填写工号')
+    return admin(c, apis.directory.decide(validatePolicy(input.policy), input.staffNo.trim()))
+  })
+
   app.get('/admin/connections', c => admin(c, apis.connections.list()))
   app.get('/admin/connections/:id', c => admin(c, apis.connections.publicView(apis.connections.get(id(c.req.param('id'))))))
   app.post('/admin/connections', async c => admin(c, apis.connections.publicView(apis.connections.save(undefined, await readJson(c))), 201))
@@ -227,10 +246,11 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
   app.post('/admin/apis/test', async c => {
     const input = await readJson(c)
     const api = body(input.api ?? null)
-    if (api.mode === 'MANUAL') throw bad('手工维护模式没有 SQL')
+    const local = api.mode === 'MANUAL'
     // Names and routes may still be unfilled; validate the selected execution mode.
     const draft = apis.validate({
-      ...api, name: 'draft', code: 'draft', path: '/open/draft', mode: api.mode === 'XINGCHEN' ? 'XINGCHEN' : 'REALTIME',
+      ...api, enabled: false, name: 'draft', code: 'draft', path: '/open/draft', mode: local ? api.mode : api.mode === 'XINGCHEN' ? 'XINGCHEN' : 'REALTIME',
+      accessPolicy: api.accessPolicy ?? { enabled: api.auth === 'EXTERNAL' },
       params: api.mode === 'REALTIME' || api.mode === 'XINGCHEN' ? api.params : [],
     })
     const started = performance.now()
@@ -240,14 +260,16 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
       if (error instanceof HttpError && error.status === 401) throw bad(error.message)
       throw error
     }) : undefined
+    if (draft.auth === 'EXTERNAL') apis.directory.authorize(draft.accessPolicy, identity, null, value => c.set('authorization', value))
+    if (local) return admin(c, { elapsedMs: Math.round(performance.now() - started), authorization: c.get('authorization'), externalAuthTrace: c.get('externalAuthTrace') })
     if (draft.mode === 'XINGCHEN') {
       const response = await xingchen.forward(draft, body(input.params ?? {}), identity, { signal: c.req.raw.signal, blocking: true })
       return admin(c, { elapsedMs: Math.round(performance.now() - started), response: parse(await response.text()),
-        externalAuthTrace: c.get('externalAuthTrace') })
+        externalAuthTrace: c.get('externalAuthTrace'), authorization: c.get('authorization') })
     }
     const rows = await apis.realtime(draft, body(input.params ?? {}), { truncate: true, identity }).catch(withDetail)
     return admin(c, { elapsedMs: Math.round(performance.now() - started), count: rows.length, rows,
-      ...(c.get('externalAuthTrace') ? { externalAuthTrace: c.get('externalAuthTrace') } : {}) })
+      authorization: c.get('authorization'), ...(c.get('externalAuthTrace') ? { externalAuthTrace: c.get('externalAuthTrace') } : {}) })
   })
   app.get('/admin/apis/:id', c => admin(c, apis.get(id(c.req.param('id')))))
   app.put('/admin/apis/:id', async c => admin(c, apis.save(id(c.req.param('id')), await readJson(c))))
@@ -331,12 +353,15 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
 
   app.all('/open/dataskill/*', async c => {
     const started = performance.now()
+    let authorization: AccessDecision | undefined
     c.set('completeCall', response => {
       logs.write({ requestId: c.get('requestId'), at: now(), apiId: null, mode: 'DATASKILL',
         elapsedMs: performance.now() - started, rowCount: 0, ok: response.ok,
-        error: response.ok ? null : `HTTP ${response.status}` })
+        error: response.ok ? null : `HTTP ${response.status}`,
+        requestTrace: { method: c.req.method, path: c.req.path, status: response.status, responseType: response.headers.get('content-type'),
+          headers: '[REDACTED]', headersTruncated: false, query: '', queryTruncated: false, body: null, bodyTruncated: false, bodyNote: 'Studio 请求正文不记录', authorization } })
     })
-    return dataskill.forward(c.req.raw, c.get('requestId'))
+    return dataskill.forward(c.req.raw, c.get('requestId'), value => { authorization = value })
   })
 
   app.all('/open/*', async c => {
@@ -381,6 +406,10 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
       const identity = api.auth === 'EXTERNAL'
         ? await externalAuth.verify(apis.identityConfig(api), api.externalAuth ? c.req.header(api.externalAuth.inputHeader) : undefined,
           trace => { externalAuthTrace = trace }, { redact: false }) : undefined
+      if (api.auth === 'EXTERNAL') {
+        diagnostic.stage('authorization')
+        apis.directory.authorize(api.accessPolicy, identity, api.version, value => { diagnostic.trace.authorization = value })
+      }
       diagnostic.stage(api.mode === 'XINGCHEN' ? 'forward' : 'query')
       const input: JsonObject = api.method === 'GET' ? c.req.query() : await readJson(c)
       if (api.mode === 'XINGCHEN') {

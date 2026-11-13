@@ -29,9 +29,9 @@ export class Connections {
   constructor(db: Db, config: Config) { this.db = db; this.config = config }
 
   private studioConnections() {
-    const rows = this.db.prepare("SELECT id, name, config FROM connection WHERE kind = 'DATASKILL' ORDER BY id").all() as
-      { id: number; name: string; config: string }[]
-    return rows.map(row => ({ id: row.id, name: row.name,
+    const rows = this.db.prepare("SELECT id, name, config, version FROM connection WHERE kind = 'DATASKILL' ORDER BY id").all() as
+      { id: number; name: string; config: string; version: number }[]
+    return rows.map(row => ({ id: row.id, name: row.name, version: row.version,
       config: parse(decrypt(this.config.secretKey, row.config)) as unknown as DataSkillConfig }))
   }
 
@@ -63,10 +63,10 @@ export class Connections {
   auth(id: number): ExternalAuthConfig { return this.get(id, 'EXTERNAL_AUTH').config as ExternalAuthConfig }
   platform(id: number): { baseUrl: string } { return this.get(id, 'XINGCHEN').config as { baseUrl: string } }
 
-  dataSkill(): DataSkillConfig | undefined {
+  dataSkill(): (DataSkillConfig & { version: number }) | undefined {
     const active = this.studioConnections().filter(c => c.config.enabled)
     if (active.length > 1) throw conflict('只能启用一个 DataSkill Studio 连接')
-    return active[0]?.config
+    return active[0] ? { ...active[0].config, version: active[0].version } : undefined
   }
 
   publicView(connection: Connection) {
@@ -94,6 +94,8 @@ export class Connections {
         if (studio.enabled && this.studioConnections().some(c => c.id !== id && c.config.enabled)) {
           throw conflict('已有启用的 DataSkill Studio 连接，请先停用原连接')
         }
+        if (studio.enabled && Object.values(studio.accessPolicies ?? {}).some(policy => policy.enabled)
+          && !this.db.prepare('SELECT 1 FROM staff_directory WHERE snapshot_version > 0').get()) throw bad('请先成功同步人员目录，再启用受控的 Studio 入口')
       }
       if (this.db.prepare('SELECT 1 FROM connection WHERE name = ? AND id IS NOT ?').get(name, id ?? null)) throw conflict('连接名称已存在')
       const at = now()
@@ -116,11 +118,13 @@ export class Connections {
         throw conflict(`工号映射正在被 DataSkill Studio 连接「${studio.name}」使用，不能删除或修改类型`)
       }
     }
-    const used = this.db.prepare('SELECT mode, sql_text, xingchen FROM api WHERE auth_connection_id = ?').all(id) as
-      { mode: string; sql_text: string | null; xingchen: string | null }[]
+    const used = this.db.prepare('SELECT mode, sql_text, xingchen, access_policy FROM api WHERE auth_connection_id = ?').all(id) as
+      { mode: string; sql_text: string | null; xingchen: string | null; access_policy: string }[]
     for (const api of used) {
       const names = api.mode === 'REALTIME' ? parseSql(api.sql_text!).names
         : api.mode === 'XINGCHEN' && api.xingchen ? [(parse(decrypt(this.config.secretKey, api.xingchen)) as JsonObject).staffCodeBinding] : []
+      const policy = JSON.parse(api.access_policy)
+      if (policy.enabled) names.push(policy.staffBinding)
       for (const binding of previous.bindings.filter(binding => names.includes(binding.name))) {
         if (!next.bindings.some(item => item.name === binding.name && item.type === binding.type)) {
           throw conflict(`身份字段 ${binding.name} 正被 API 使用，不能删除或修改类型；请先调整关联 API`)

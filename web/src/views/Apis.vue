@@ -167,6 +167,7 @@ async function closeForm() {
         </el-table-column>
         <el-table-column label="使用连接" min-width="170"><template #default="{ row }">
           <div>{{ row.authConnectionName || (row.auth === 'PUBLIC' ? '公开访问' : row.auth === 'API_KEY' ? 'API Key' : '未配置') }}</div>
+          <el-tag v-if="row.auth === 'EXTERNAL'" :type="row.accessPolicy.enabled ? 'success' : 'warning'" size="small">{{ row.accessPolicy.enabled ? '人员授权已开启' : '未开启人员授权' }}</el-tag>
           <div v-if="row.xingchenConnectionName" class="muted">{{ row.xingchenConnectionName }}</div>
         </template></el-table-column>
         <el-table-column label="启用" width="75"><template #default="{ row }"><el-switch :model-value="row.enabled" :loading="changing === row.id" :aria-label="`${row.name} 启用状态`" @change="toggle(row)" /></template></el-table-column>

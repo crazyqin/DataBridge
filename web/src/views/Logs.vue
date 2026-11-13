@@ -17,7 +17,7 @@ const detailRow = ref<LogItem>()
 const detailTab = ref('request')
 const showDetail = ref(false)
 const loadingDetail = ref<number>()
-const stages: Record<CallStage, string> = { request: '读取请求', routing: '匹配接口', access: '访问检查', identity: '身份验证',
+const stages: Record<CallStage, string> = { request: '读取请求', routing: '匹配接口', access: '访问检查', identity: '身份验证', authorization: '权限检查',
   query: '参数校验与查询', forward: '参数校验与转发', response: '生成响应', stream: '流式传输' }
 const authLabels = { PUBLIC: '公开访问', API_KEY: 'API Key', EXTERNAL: '外部身份验证' }
 const bytes = (value: number) => value < 1024 ? `${value} B` : `${(value / 1024).toFixed(1)} KiB`
@@ -175,6 +175,7 @@ onMounted(async () => {
           </template>
           <el-empty v-else description="旧日志未记录请求参数，升级后的新调用会显示在这里" />
         </el-tab-pane>
+        <el-tab-pane label="权限检查" name="authorization"><template v-if="detail.request?.authorization"><el-alert :type="detail.request.authorization.allowed ? 'success' : 'warning'" :title="detail.request.authorization.reason" :closable="false" /><dl class="call-facts"><div><dt>工号</dt><dd>{{ detail.request.authorization.staffNo || '—' }}</dd></div><div><dt>命中规则</dt><dd>{{ detail.request.authorization.rule || '—' }}</dd></div><div><dt>目录版本</dt><dd>{{ detail.request.authorization.directoryVersion }}</dd></div><div><dt>授权配置版本</dt><dd>{{ detail.request.authorization.policyVersion ?? '—' }}</dd></div></dl></template><el-empty v-else description="本次调用没有人员授权详情" /></el-tab-pane>
         <el-tab-pane label="身份验证" name="auth">
           <ExternalAuthTrace v-if="detail.externalAuth" :trace="detail.externalAuth" />
           <el-empty v-else description="本次调用没有外部身份验证详情" />

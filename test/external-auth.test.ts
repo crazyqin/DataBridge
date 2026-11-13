@@ -164,7 +164,7 @@ test('admin identity tests and persisted call details are available without expo
   }
   try {
     const api = f.apis.save(undefined, { name: 'diagnostics', code: 'diagnostics', path: '/open/diagnostics', mode: 'MANUAL',
-      auth: 'EXTERNAL', externalAuth: definition, enabled: true, fields: [{ name: 'name', type: 'string' }] })
+      auth: 'EXTERNAL', accessPolicy: { enabled: false }, externalAuth: definition, enabled: true, fields: [{ name: 'name', type: 'string' }] })
     f.apis.createRow(api.id, { name: 'business data' })
     await t.test('open errors stay generic and details require an admin session', async () => {
       const response = await f.app.request('/open/diagnostics', { headers: { 'X-Access-Token': 'private-user-token' } })
@@ -446,7 +446,7 @@ test('external verification checks every success condition before data access', 
     try {
       const source = f.sources.save(undefined, { name: 'unused', host: '127.0.0.1', port: 1, database: 'unused', username: 'unused', password: 'unused' })
       f.apis.save(undefined, {
-        name: 'state-check', code: 'state_check', path: '/open/state-check', auth: 'EXTERNAL', mode: 'REALTIME', enabled: true,
+        name: 'state-check', code: 'state_check', path: '/open/state-check', auth: 'EXTERNAL', accessPolicy: { enabled: false }, mode: 'REALTIME', enabled: true,
         sql: 'SELECT :_auth_subject AS subject', datasourceId: source.id, externalAuth: settings as unknown as JsonObject,
       })
       const call = () => f.app.request('/open/state-check', { headers: { 'X-Access-Token': 'test-token' } })
@@ -684,7 +684,7 @@ test('identity-scoped APIs validate configuration and reject missing identity wi
   try {
     const source = f.sources.save(undefined, { name: 'unused', host: '127.0.0.1', port: 1, database: 'unused', username: 'unused', password: 'unused' })
     const base: JsonObject = {
-      name: 'scoped', code: 'scoped', path: '/open/scoped', mode: 'REALTIME', auth: 'EXTERNAL',
+      name: 'scoped', code: 'scoped', path: '/open/scoped', mode: 'REALTIME', auth: 'EXTERNAL', accessPolicy: { enabled: false },
       datasourceId: source.id, sql: 'SELECT :_auth_subject AS subject', enabled: true,
       externalAuth: authConfig('http://127.0.0.1:1/verify', { headers: { 'X-Service-Key': 'private-service-key' }, dynamicHeaders: signingHeaders }),
     }
@@ -777,7 +777,7 @@ test('UAP GET query credentials and signed headers gate SQL by active staffCode'
         bindings: [{ name: '_auth_staff_code', path: 'data.staffCode', type: 'string' }], timeoutSeconds: 10,
       })
       const definition: JsonObject = {
-        name: 'uap-staff', code: 'uap_staff', path: '/open/uap-staff', mode: 'REALTIME', auth: 'EXTERNAL',
+        name: 'uap-staff', code: 'uap_staff', path: '/open/uap-staff', mode: 'REALTIME', auth: 'EXTERNAL', accessPolicy: { enabled: false },
         externalAuth, datasourceId: source.id, params: [], enabled: true,
         sql: `WITH staff_info(staff_no, display_name) AS (VALUES ('00103741', 'Test A'), ('00999999', 'Test B'))
           SELECT * FROM staff_info t WHERE t.staff_no = :_auth_staff_code`,
@@ -899,7 +899,7 @@ test('external identity reaches SQL, paging and admin previews without accepting
         WHERE p.subject_id = :_auth_subject AND p.tenant_id = :_auth_tenant AND (:item IS NULL OR o.item = :item)
         ORDER BY o.id`
       const definition: JsonObject = {
-        name: 'orders', code: 'orders', path: '/open/orders', mode: 'REALTIME', auth: 'EXTERNAL',
+        name: 'orders', code: 'orders', path: '/open/orders', mode: 'REALTIME', auth: 'EXTERNAL', accessPolicy: { enabled: false },
         externalAuth: authConfig(upstream.url, {
           method: 'GET', tokenLocation: 'query', tokenName: 'access_token',
           headers: { 'X-Client-Id': 'example-client' }, dynamicHeaders: signingHeaders,
@@ -986,7 +986,7 @@ test('external identity reaches SQL, paging and admin previews without accepting
       })
       await t.test('external verification can gate stored APIs without SQL bindings', async () => {
         const api = f.apis.save(undefined, {
-          name: 'shared', code: 'shared', path: '/open/shared', mode: 'MANUAL', auth: 'EXTERNAL', enabled: true,
+          name: 'shared', code: 'shared', path: '/open/shared', mode: 'MANUAL', auth: 'EXTERNAL', accessPolicy: { enabled: false }, enabled: true,
           externalAuth: authConfig(upstream.url, { successPath: 'code', successValue: 0, bindings: [] }),
           fields: [{ name: 'name', type: 'string' }],
         })
