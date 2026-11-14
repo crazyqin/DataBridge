@@ -12,7 +12,8 @@ export interface Config {
   adminPassword?: string
   timezone: string
   secureCookies: boolean | 'auto'
-  trustProxy: boolean
+  /** Number of reverse proxies in front of the service; 0 ignores forwarding headers. */
+  trustProxy: number
   logRetentionDays: number
   maxConcurrentQueries: number
 }
@@ -56,7 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminPassword: env.ADMIN_PASSWORD || undefined,
     timezone: env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     secureCookies: cookie === 'auto' ? 'auto' : cookie === 'true',
-    trustProxy: env.TRUST_PROXY === 'true',
+    trustProxy: env.TRUST_PROXY === 'true' ? 1 : env.TRUST_PROXY === 'false' || env.TRUST_PROXY === '0' ? 0 : integer(env.TRUST_PROXY, 0, 'TRUST_PROXY'),
     logRetentionDays: integer(env.LOG_RETENTION_DAYS, 30, 'LOG_RETENTION_DAYS'),
     maxConcurrentQueries: integer(env.MAX_CONCURRENT_QUERIES, 20, 'MAX_CONCURRENT_QUERIES'),
   }
@@ -71,7 +72,8 @@ export function encrypt(key: Buffer, plaintext: string): string {
 
 export function decrypt(key: Buffer, encoded: string): string {
   const raw = Buffer.from(encoded, 'base64')
-  const decipher = createDecipheriv('aes-256-gcm', key, raw.subarray(0, 12))
+  if (raw.length < 28) throw new Error('Encrypted value is truncated')
+  const decipher = createDecipheriv('aes-256-gcm', key, raw.subarray(0, 12), { authTagLength: 16 })
   decipher.setAuthTag(raw.subarray(12, 28))
   return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8')
 }

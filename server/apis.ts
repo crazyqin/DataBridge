@@ -10,7 +10,7 @@ import { bad, conflict, forbidden, HttpError, notFound } from './errors.ts'
 import { AUTH_PARAM_PREFIX, validateExternalAuth, type ExternalAuthConfig, type QueryIdentity } from './external-auth.ts'
 import { choice, flag, integer, list, NAME, names, text } from './input.ts'
 import { isObject, parse, stringify, type Json, type JsonObject } from './json.ts'
-import { runQuery, SourceError } from './query.ts'
+import { runQuery, runStatements, SourceError } from './query.ts'
 import type { Sources } from './sources.ts'
 import { parseSql, positional } from './sql.ts'
 import { convertOptional, FIELD_TYPES, identity, rowKey, type Field, type FieldType } from './values.ts'
@@ -199,6 +199,8 @@ export class Apis {
   pruneSyncHistory(retentionDays: number) {
     const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString()
     this.db.prepare("DELETE FROM sync_log WHERE started_at < ? AND status != 'RUNNING'").run(cutoff)
+    // A pending candidate waits for an administrator's decision however old it is.
+    this.db.prepare("DELETE FROM directory_sync WHERE started_at < ? AND status NOT IN ('RUNNING', 'PENDING')").run(cutoff)
   }
 
   /** Validates a submitted configuration; the result is what gets stored. */
@@ -606,12 +608,13 @@ export class Apis {
     if (api.mode !== 'REALTIME') return this.localPage(api, input, page, pageSize)
     const { sql, values, pool } = this.realtimeStatement(api, input, identity)
     const source = `(${sql}) AS databridge_source`
-    const count = await runQuery(pool, `SELECT count(*)::text AS total FROM ${source}`, values,
-      { timeoutSeconds: api.timeoutSeconds, maxRows: 1 })
+    // One snapshot for both, so the total matches the page even while the source changes.
+    const [count, result] = await runStatements(pool, [
+      { text: `SELECT count(*)::text AS total FROM ${source}`, values, maxRows: 1 },
+      { text: `SELECT * FROM ${source} LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, values, maxRows: pageSize },
+    ], api.timeoutSeconds)
     const total = Number(count.rows[0].total)
     if (!Number.isSafeInteger(total)) throw new HttpError(422, '结果总数过大，无法分页')
-    const result = await runQuery(pool, `SELECT * FROM ${source} LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, values,
-      { timeoutSeconds: api.timeoutSeconds, maxRows: pageSize })
     return { rows: result.rows, total, page, pageSize }
   }
 
@@ -643,7 +646,13 @@ export class Apis {
       if (param.required && (value === null || value === '')) throw bad(`缺少参数 ${name}`)
       return toPg(value)
     })
-    const sql = positional(parsed, name => PG_TYPES[[...api.params, ...authBindings].find(p => p.name === name)!.type])
+    const sql = positional(parsed, name => {
+      const type = PG_TYPES[[...api.params, ...authBindings].find(p => p.name === name)!.type]
+      // Datetimes with an offset arrive in UTC ("Z"); a plain timestamp cast would drop the zone,
+      // so read them as timestamptz and convert to the session's local time.
+      const value = values[parsed.names.indexOf(name)]
+      return type === 'timestamp' && value?.endsWith('Z') ? 'timestamptz::timestamp' : type
+    })
     const { pool } = this.sources.pool(api.datasourceId!)
     return { sql, values, pool }
   }

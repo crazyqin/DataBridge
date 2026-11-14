@@ -178,3 +178,50 @@ test('Studio connections reject missing or unsuitable UAP fields and invalid ser
     assert.equal(apis.connections.list().length,1)
   } finally { apis.stopSchedules(); await sources.closeAll(); db.close(); rmSync(directory,{recursive:true,force:true}) }
 })
+
+test('Skill downloads stream through, hold their slot until the body ends, and reject oversized packages', async () => {
+  const pkg = Buffer.alloc(256 * 1024, 7)
+  let declared: number | undefined
+  const identity = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ active: true, data: { staffCode: '00123' } }))
+  })
+  const studio = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    res.writeHead(200, { 'Content-Type': 'application/zip', ...(declared ? { 'Content-Length': String(declared) } : {}) })
+    if (declared) { res.write(pkg.subarray(0, 1024)); res.destroy(); return }
+    res.end(pkg)
+  })
+  const directory = mkdtempSync(join(tmpdir(), 'databridge-skill-download-'))
+  const authUrl = await listen(identity), studioUrl = await listen(studio)
+  const config = loadConfig({ DATA_DIR: directory, MAX_CONCURRENT_QUERIES: '1' })
+  const db = openDb(config.dbFile), auth = new Auth(db, config), sources = new Sources(db, config)
+  const apis = new Apis(db, sources, config), app = createApp({ config, db, auth, sources, apis, logs: new Logs(db) })
+  try {
+    const connection = apis.connections.save(undefined, { name: 'uap', kind: 'EXTERNAL_AUTH', config: { url: authUrl, method: 'POST',
+      inputHeader: 'Authorization', inputPrefix: 'Bearer ', tokenLocation: 'header', tokenName: 'Authorization', tokenPrefix: 'Bearer ',
+      successPath: 'active', successValue: true, bindings: [{ name: '_auth_staff_code', path: 'data.staffCode', type: 'string' }] } })
+    apis.connections.save(undefined, { name: 'Studio', kind: 'DATASKILL', config: { baseUrl: studioUrl, serviceToken: 'server-only-token-32-characters-long',
+      authConnectionId: connection.id, staffCodeBinding: '_auth_staff_code', identityProvider: 'uap', enabled: true,
+      accessPolicies: Object.fromEntries(['feedback', 'status', 'withdraw', 'skill-check', 'skill-download'].map(key => [key, { enabled: false }])) } })
+    const download = () => app.request('/open/dataskill/skill-download/12345678-1234-1234-1234-123456789abc', { headers: { Authorization: 'Bearer personal-A' } })
+    const first = await download()
+    assert.equal(first.status, 200)
+    assert.equal(first.headers.get('content-type'), 'application/zip')
+    // The unread stream still owns the only forwarding slot.
+    assert.equal((await download()).status, 503)
+    assert.deepEqual(Buffer.from(await first.arrayBuffer()), pkg)
+    const second = await download()
+    assert.equal(second.status, 200)
+    assert.equal(Buffer.from(await second.arrayBuffer()).length, pkg.length)
+    declared = 65 * 1024 * 1024
+    assert.equal((await download()).status, 502)
+    declared = undefined
+    assert.equal((await download()).status, 200, 'a rejected package releases its slot')
+  } finally {
+    apis.stopSchedules(); await sources.closeAll(); db.close()
+    identity.closeAllConnections(); studio.closeAllConnections()
+    await Promise.all([new Promise<void>(r => identity.close(() => r())), new Promise<void>(r => studio.close(() => r()))])
+    rmSync(directory, { recursive: true, force: true })
+  }
+})

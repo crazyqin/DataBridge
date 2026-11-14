@@ -3,7 +3,7 @@ import { bad, HttpError, unauthorized } from './errors.ts'
 import { body as object, choice, integer, list, NAME, text } from './input.ts'
 import { isObject, parse, stringify, type Json, type JsonObject } from './json.ts'
 import { convert, FIELD_TYPES, identity, type FieldType } from './values.ts'
-import { AUTH_PREVIEW_BYTES, authRedactor, plainDiagnostics, readAuthResponse, transportDetail, type ExternalAuthTrace } from './auth-diagnostics.ts'
+import { AUTH_PREVIEW_BYTES, authRedactor, maskCredential, plainDiagnostics, sensitiveName, readAuthResponse, transportDetail, type ExternalAuthTrace } from './auth-diagnostics.ts'
 
 export const AUTH_PARAM_PREFIX = '_auth_'
 export const TEST_CREDENTIAL_HEADER = 'X-DataBridge-Test-Credential'
@@ -172,6 +172,28 @@ export function validateExternalAuth(value: Json | undefined): ExternalAuthConfi
 }
 
 /** Calls an administrator-configured verifier and maps trusted response fields to SQL parameters. */
+/** Places the token where the service expects it; sets the token header and Content-Type on headers. */
+function serviceRequest(config: ExternalAuthConfig, headers: Headers, outgoing: string): { url: URL; body: string | undefined } {
+  const url = new URL(config.url)
+  if (config.tokenLocation === 'header' || config.tokenLocation === 'query') {
+    if (config.tokenLocation === 'header') headers.set(config.tokenName, outgoing)
+    else url.searchParams.set(config.tokenName, outgoing)
+    if (config.method === 'POST' && Object.keys(config.body).length) {
+      headers.set('Content-Type', 'application/json')
+      return { url, body: stringify(config.body) }
+    }
+    return { url, body: undefined }
+  }
+  const values = { ...config.body, [config.tokenName]: outgoing }
+  if (config.tokenLocation === 'json') {
+    headers.set('Content-Type', 'application/json')
+    return { url, body: stringify(values) }
+  }
+  headers.set('Content-Type', 'application/x-www-form-urlencoded')
+  return { url, body: new URLSearchParams(Object.entries(values).map(([key, value]) =>
+    [key, value === null ? '' : JSON.isRawJSON(value) ? value.rawJSON : String(value)])).toString() }
+}
+
 export class ExternalAuth {
   private active = 0
   private readonly maxConcurrent: number
@@ -181,10 +203,12 @@ export class ExternalAuth {
   }
 
   async verify(config: ExternalAuthConfig | null, credential: string | undefined,
-    diagnostic?: (trace: ExternalAuthTrace) => void, options: { redact?: boolean } = {}): Promise<QueryIdentity> {
+    diagnostic?: (trace: ExternalAuthTrace) => void, options: { redact?: boolean | 'credentials' } = {}): Promise<QueryIdentity> {
     const started = performance.now()
+    // 'credentials' keeps original values but hides the token and secret headers sent to the service.
+    const redact = options.redact ?? true
     const trace: ExternalAuthTrace = { at: new Date().toISOString(), elapsedMs: 0, ok: false, error: null, detail: null,
-      request: null, response: null, checks: [], redacted: options.redact !== false }
+      request: null, response: null, checks: [], redacted: redact === true, ...(redact === 'credentials' ? { credentialsMasked: true } : {}) }
     const preview = trace.redacted ? authRedactor(config, credential) : plainDiagnostics
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -209,31 +233,15 @@ export class ExternalAuth {
         headers.set(name, renderHeaderValue(expression, now))
       }
       if (!headers.has('Accept')) headers.set('Accept', 'application/json')
+      const shown = new Headers(headers)
+      if (redact === 'credentials') for (const [name, value] of headers) if (sensitiveName(name)) shown.set(name, maskCredential(value))
       const outgoing = config.tokenPrefix + token
-      const url = new URL(config.url)
-      let requestBody: string | undefined
-      if (config.tokenLocation === 'header' || config.tokenLocation === 'query') {
-        if (config.tokenLocation === 'header') headers.set(config.tokenName, outgoing)
-        else url.searchParams.set(config.tokenName, outgoing)
-        if (config.method === 'POST' && Object.keys(config.body).length) {
-          headers.set('Content-Type', 'application/json')
-          requestBody = stringify(config.body)
-        }
-      } else {
-        const values = { ...config.body, [config.tokenName]: outgoing }
-        if (config.tokenLocation === 'json') {
-          headers.set('Content-Type', 'application/json')
-          requestBody = stringify(values)
-        } else {
-          headers.set('Content-Type', 'application/x-www-form-urlencoded')
-          requestBody = new URLSearchParams(Object.entries(values).map(([key, value]) =>
-            [key, value === null ? '' : JSON.isRawJSON(value) ? value.rawJSON : String(value)])).toString()
-        }
-      }
+      const { url, body: requestBody } = serviceRequest(config, headers, outgoing)
       if (diagnostic) {
-        const requestHeaders = preview.headers(headers, true)
-        const requestPreview = requestBody === undefined ? null : preview.body(requestBody, headers.get('Content-Type') ?? '')
-        trace.request = { method: config.method, url: preview.url(url.toString()), headers: requestHeaders,
+        const logged = redact === 'credentials' ? serviceRequest(config, shown, maskCredential(outgoing)) : { url, body: requestBody }
+        const requestHeaders = preview.headers(redact === 'credentials' ? shown : headers, true)
+        const requestPreview = logged.body === undefined ? null : preview.body(logged.body, headers.get('Content-Type') ?? '')
+        trace.request = { method: config.method, url: preview.url(logged.url.toString()), headers: requestHeaders,
           body: requestPreview?.text ?? null, truncated: requestPreview?.truncated ?? false }
       }
       response = await fetch(url, {

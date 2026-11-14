@@ -185,18 +185,21 @@ test('admin identity tests and persisted call details are available without expo
       assert.equal(detail.body.response.status, 500)
       assert.match(detail.body.response.body, /upstream failure details/)
       assert.equal(detail.body.redacted, false)
-      assert.equal(new URL(detail.body.request.url).searchParams.get('userToken'), 'private-user-token')
+      assert.equal(detail.body.credentialsMasked, true)
+      // The token sent to the service is hidden; the service's response keeps its original values.
+      assert.equal(new URL(detail.body.request.url).searchParams.get('userToken'), '[REDACTED]')
       assert.equal(JSON.parse(detail.body.response.body).token, 'private-rotated-token')
       const combined = await call(`/admin/logs/${list.items[0].id}/details`)
       assert.equal(combined.status, 200)
       assert.equal(combined.body.request.status, 502)
       assert.equal(combined.body.request.method, 'GET')
       assert.equal(combined.body.externalAuth.response.status, 500)
-      assert.equal(JSON.parse(combined.body.request.headers)['x-access-token'], 'private-user-token')
-      assert.doesNotMatch(JSON.stringify(combined.body), /\[REDACTED\]/)
-      const stored = f.db.prepare('SELECT detail FROM request_auth_log').all()
-      assert.match(JSON.stringify(stored), /private-user-token/)
-      assert.match(JSON.stringify(stored), /private-rotated-token/)
+      assert.equal(JSON.parse(combined.body.request.headers)['x-access-token'], '[REDACTED]')
+      assert.doesNotMatch(combined.body.externalAuth.response.body, /\[REDACTED\]/)
+      const stored = JSON.stringify(f.db.prepare('SELECT detail FROM request_auth_log').all()) +
+        JSON.stringify(f.db.prepare('SELECT detail FROM request_detail_log').all())
+      assert.doesNotMatch(stored, /private-user-token/)
+      assert.match(stored, /private-rotated-token/)
     })
     await t.test('numeric credentials do not mask matching digits or numeric fields in persisted identity details', async () => {
       responseStatus = 200
@@ -207,13 +210,14 @@ test('admin identity tests and persisted call details are available without expo
       assert.equal(detail.status, 200)
       const trace = detail.body.externalAuth
       assert.equal(trace.redacted, false)
-      assert.equal(new URL(trace.request.url).searchParams.get('userToken'), '1')
+      assert.equal(new URL(trace.request.url).searchParams.get('userToken'), '[REDACTED]')
       for (const literal of ['9007199254740993', '1.10', '13800138000', '"tokenCount": 1', '"token": "1"']) {
         assert.ok(trace.response.body.includes(literal))
       }
       assert.deepEqual(trace.checks.map((check: { actual: unknown }) => check.actual), [200, 'A'])
-      assert.equal(JSON.parse(detail.body.request.headers)['x-access-token'], '1')
-      assert.doesNotMatch(JSON.stringify(detail.body), /\[REDACTED\]/)
+      assert.equal(JSON.parse(detail.body.request.headers)['x-access-token'], '[REDACTED]')
+      // Masking works by position, so the digit "1" elsewhere in the response is untouched.
+      assert.doesNotMatch(trace.response.body, /\[REDACTED\]/)
       responseStatus = 500
       responseBody = '{"msg":"upstream failure details","token":"private-rotated-token"}'
     })

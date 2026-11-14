@@ -135,6 +135,20 @@ describe('DataBridge', { skip: !PG_URL && 'set TEST_PG_URL to run integration te
     assert.equal((await open('/open/types?other=1')).status, 400)
   })
 
+  test('datetime parameters with an offset compare as the same instant', async () => {
+    await createApi({
+      name: 'since', code: 'since', path: '/open/since', mode: 'REALTIME',
+      params: [{ name: 'since', type: 'datetime', required: true }],
+      // seen is timestamptz; local is the same value as a plain timestamp in the session time zone (Asia/Shanghai).
+      sql: `SELECT id, :since AS since FROM databridge_test.item WHERE seen >= :since AND seen::timestamp >= :since ORDER BY id`,
+    })
+    for (const since of ['2026-09-25T11:00:00+08:00', '2026-09-25T03:00:00Z', '2026-09-25 11:00:00']) {
+      const response = await open('/open/since?since=' + encodeURIComponent(since))
+      assert.equal(response.status, 200, response.text)
+      assert.deepEqual(response.json.data, [{ id: 2, since: '2026-09-25T11:00:00' }], since)
+    }
+  })
+
   test('open calls check key, User-Agent, row limit and hide SQL errors', async () => {
     await createApi({
       name: 'items', code: 'items', path: '/open/items', method: 'POST', mode: 'REALTIME', maxRows: 2, userAgents: ['Client/*'],

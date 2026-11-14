@@ -56,9 +56,17 @@ function sourceError(error: unknown): HttpError {
 
 export interface QueryResult { rows: Record<string, Json>[]; truncated: boolean; columns: string[] }
 
+export interface Statement { text: string; values: (string | null)[]; maxRows: number }
+
 /** Runs one read-only statement and returns at most maxRows rows. */
 export async function runQuery(pool: pg.Pool, text: string, values: (string | null)[],
                                options: { timeoutSeconds: number; maxRows: number }): Promise<QueryResult> {
+  const [result] = await runStatements(pool, [{ text, values, maxRows: options.maxRows }], options.timeoutSeconds)
+  return result
+}
+
+/** Runs statements in one read-only transaction; with several, they all see the same snapshot. */
+export async function runStatements(pool: pg.Pool, statements: Statement[], timeoutSeconds: number): Promise<QueryResult[]> {
   let client: pg.PoolClient
   try {
     client = await pool.connect()
@@ -67,37 +75,47 @@ export async function runQuery(pool: pg.Pool, text: string, values: (string | nu
   }
   let broken = false
   let timer: NodeJS.Timeout | undefined
+  // Backstop for a hung network, covering every round trip: the server-side timeout normally fires first.
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SourceError(504, '数据源查询超时', 'client deadline')),
+      timeoutSeconds * 1000 * statements.length + 5000)
+  })
+  deadline.catch(() => {})
+  const bounded = <T>(work: Promise<T>): Promise<T> => {
+    work.catch(() => {})
+    return Promise.race([work, deadline])
+  }
   try {
-    await client.query('BEGIN READ ONLY')
-    await client.query(`SET LOCAL statement_timeout = ${options.timeoutSeconds * 1000}`)
-    const cursor = client.query(new Cursor(text, values, { rowMode: 'array', types: typeParsers }))
-    // Backstop for a hung network: the server-side timeout normally fires first.
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new SourceError(504, '数据源查询超时', 'client deadline')), options.timeoutSeconds * 1000 + 5000)
-    })
-    const read = new Promise<{ rows: Json[][]; fields: { name: string }[] }>((resolve, reject) =>
-      cursor.read(options.maxRows + 1, (error, rows, result) =>
-        error ? reject(error) : resolve({ rows: rows as Json[][], fields: result.fields })))
-    read.catch(() => {})
-    const { rows, fields } = await Promise.race([read, deadline])
-    await cursor.close()
-    const names = fields.map(field => field.name)
-    const duplicate = names.find((name, index) => names.indexOf(name) !== index)
-    if (duplicate) throw new HttpError(400, `查询结果包含重复的列名 ${duplicate}`)
-    const truncated = rows.length > options.maxRows
-    return {
-      columns: names,
-      truncated,
-      rows: rows.slice(0, options.maxRows).map(row => Object.fromEntries(names.map((name, i) => [name, row[i]]))),
-    }
+    await bounded(client.query(statements.length > 1 ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN READ ONLY'))
+    await bounded(client.query(`SET LOCAL statement_timeout = ${timeoutSeconds * 1000}`))
+    const results: QueryResult[] = []
+    for (const statement of statements) results.push(await readStatement(client, statement, bounded))
+    return results
   } catch (error) {
     // PostgreSQL errors leave the connection usable; network failures and our deadline do not.
     const fromServer = /^[0-9A-Z]{5}$/.test(String((error as { code?: unknown }).code ?? ''))
     broken = error instanceof SourceError || (!fromServer && !(error instanceof HttpError))
     throw sourceError(error)
   } finally {
+    if (!broken) await bounded(client.query('ROLLBACK')).catch(() => { broken = true })
     clearTimeout(timer)
-    if (!broken) await client.query('ROLLBACK').catch(() => { broken = true })
     client.release(broken)
+  }
+}
+
+async function readStatement(client: pg.PoolClient, statement: Statement,
+                             bounded: <T>(work: Promise<T>) => Promise<T>): Promise<QueryResult> {
+  const cursor = client.query(new Cursor(statement.text, statement.values, { rowMode: 'array', types: typeParsers }))
+  const { rows, fields } = await bounded(new Promise<{ rows: Json[][]; fields: { name: string }[] }>((resolve, reject) =>
+    cursor.read(statement.maxRows + 1, (error, rows, result) =>
+      error ? reject(error) : resolve({ rows: rows as Json[][], fields: result.fields }))))
+  await bounded(cursor.close())
+  const names = fields.map(field => field.name)
+  const duplicate = names.find((name, index) => names.indexOf(name) !== index)
+  if (duplicate) throw new HttpError(400, `查询结果包含重复的列名 ${duplicate}`)
+  return {
+    columns: names,
+    truncated: rows.length > statement.maxRows,
+    rows: rows.slice(0, statement.maxRows).map(row => Object.fromEntries(names.map((name, i) => [name, row[i]]))),
   }
 }

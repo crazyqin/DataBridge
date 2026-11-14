@@ -174,6 +174,10 @@ export function openDb(file: string): Db {
   const db = new DatabaseSync(file)
   db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
   const { user_version: current } = db.prepare('PRAGMA user_version').get() as { user_version: number }
+  if (current > MIGRATIONS.length) {
+    db.close()
+    throw new Error(`${file} has schema version ${current}, newer than this build supports (${MIGRATIONS.length}); run a newer DataBridge release`)
+  }
   for (let version = current; version < MIGRATIONS.length; version++) {
     transaction(db, () => {
       db.exec(MIGRATIONS[version])

@@ -3,6 +3,8 @@ import type { AuthHeaderValue, ExternalAuthConfig } from './external-auth.ts'
 
 export interface ExternalAuthTrace {
   redacted?: boolean
+  /** Original values except the credential and secret headers sent to the identity service. */
+  credentialsMasked?: boolean
   at: string
   elapsedMs: number
   ok: boolean
@@ -15,11 +17,16 @@ export interface ExternalAuthTrace {
 
 export const AUTH_PREVIEW_BYTES = 8192
 const REDACTED = '[REDACTED]'
-const sensitive = (name: string) => /authorization|cookie|token|secret|password|passwd|credential|digest|signature|(?:api|service)[_-]?key/i.test(name)
+export const sensitiveName = (name: string) => /authorization|cookie|token|secret|password|passwd|credential|digest|signature|(?:api|service)[_-]?key/i.test(name)
 
 export function diagnosticPreview(value: string): { text: string; truncated: boolean } {
   const bytes = Buffer.from(value)
   return { text: new TextDecoder().decode(bytes.subarray(0, AUTH_PREVIEW_BYTES), { stream: true }), truncated: bytes.length > AUTH_PREVIEW_BYTES }
+}
+
+/** Hides a credential so stored logs cannot replay it; long values keep the 10-character prefix the key list shows. */
+export function maskCredential(value: string): string {
+  return value.length >= 24 ? `${value.slice(0, 10)}...${REDACTED}` : REDACTED
 }
 
 /** Call logs retain original values; only preview length and JSON formatting change. */
@@ -38,7 +45,7 @@ export const plainDiagnostics = {
 export function authRedactor(config: ExternalAuthConfig | null, credential?: string, extraSecrets: string[] = []) {
   const secrets = new Set<string>()
   const hiddenHeaders = new Set<string>()
-  const visibleValues = new Set(Object.entries(config?.headers ?? {}).filter(([name]) => !sensitive(name)).map(([, value]) => value))
+  const visibleValues = new Set(Object.entries(config?.headers ?? {}).filter(([name]) => !sensitiveName(name)).map(([, value]) => value))
   function secret(value: string | undefined) {
     if (!value) return
     secrets.add(value)
@@ -52,7 +59,7 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
   }
   function collect(value: Json, name = '', depth = 0) {
     if (depth > 30) return
-    if (sensitive(name) || name === config?.tokenName) {
+    if (sensitiveName(name) || name === config?.tokenName) {
       if (typeof value === 'string') secret(value)
       else if (typeof value === 'number' || JSON.isRawJSON(value)) secret(JSON.stringify(value))
     }
@@ -66,7 +73,7 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
     secret(token)
     if (token) secret(config.tokenPrefix + token)
     if (config.tokenLocation === 'header') hiddenHeaders.add(config.tokenName.toLowerCase())
-    for (const [name, value] of Object.entries(config.headers)) if (sensitive(name) || hiddenHeaders.has(name.toLowerCase())) secret(value)
+    for (const [name, value] of Object.entries(config.headers)) if (sensitiveName(name) || hiddenHeaders.has(name.toLowerCase())) secret(value)
     for (const [name, value] of Object.entries(config.dynamicHeaders ?? {})) {
       expression(value)
       if (value.type !== 'timestamp') hiddenHeaders.add(name.toLowerCase())
@@ -86,12 +93,12 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
     if (secretPattern) result = result.replace(secretPattern, () => REDACTED)
     // Also cover truncated/non-JSON bodies and credential-bearing redirect URLs.
     result = result.replace(/(["']([^"'\r\n]+)["']\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,}\r\n]+)/g,
-      (match, prefix: string, name: string) => sensitive(name) ? prefix + JSON.stringify(REDACTED) : match)
+      (match, prefix: string, name: string) => sensitiveName(name) ? prefix + JSON.stringify(REDACTED) : match)
     return result.replace(/([?&\s])([^=\s&]+)=([^&\s<]*)/g,
-      (match, prefix: string, name: string) => sensitive(name) || name === config?.tokenName ? `${prefix}${name}=${REDACTED}` : match)
+      (match, prefix: string, name: string) => sensitiveName(name) || name === config?.tokenName ? `${prefix}${name}=${REDACTED}` : match)
   }
   function json(value: Json, name = '', depth = 0): Json {
-    if (sensitive(name) || name === config?.tokenName) return REDACTED
+    if (sensitiveName(name) || name === config?.tokenName) return REDACTED
     if (depth > 30) return '[内容过深，已省略]'
     if (typeof value === 'string') return text(value)
     if ((typeof value === 'number' || JSON.isRawJSON(value)) && secrets.has(JSON.stringify(value))) return REDACTED
@@ -103,22 +110,22 @@ export function authRedactor(config: ExternalAuthConfig | null, credential?: str
     try {
       const parsed = new URL(value, config?.url)
       for (const key of new Set(parsed.searchParams.keys())) {
-        if (sensitive(key) || key === config?.tokenName) parsed.searchParams.set(key, REDACTED)
+        if (sensitiveName(key) || key === config?.tokenName) parsed.searchParams.set(key, REDACTED)
       }
       return text(parsed.toString())
     } catch { return text(value) }
   }
   function headers(values: Headers, request = false): Record<string, string> {
-    if (request) for (const [name, value] of values) if (sensitive(name) || hiddenHeaders.has(name)) secret(value)
+    if (request) for (const [name, value] of values) if (sensitiveName(name) || hiddenHeaders.has(name)) secret(value)
     return Object.fromEntries([...values].map(([name, value]) => [name,
-      sensitive(name) || hiddenHeaders.has(name) ? REDACTED : name === 'location' ? url(value) : text(value),
+      sensitiveName(name) || hiddenHeaders.has(name) ? REDACTED : name === 'location' ? url(value) : text(value),
     ]))
   }
   function body(value: string, contentType = ''): { text: string; truncated: boolean } {
     let safe: string
     if (contentType.includes('application/x-www-form-urlencoded')) {
       const fields = new URLSearchParams(value)
-      safe = [...fields].map(([name, part]) => `${name}=${sensitive(name) || name === config?.tokenName ? REDACTED : text(part)}`).join('&')
+      safe = [...fields].map(([name, part]) => `${name}=${sensitiveName(name) || name === config?.tokenName ? REDACTED : text(part)}`).join('&')
     } else {
       try { safe = JSON.stringify(json(parse(value)), null, 2) } catch { safe = text(value) }
     }

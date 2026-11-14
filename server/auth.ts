@@ -68,17 +68,14 @@ export class Auth {
 
   async login(username: string, password: string, client: string): Promise<string> {
     const failure = this.failures.get(client)
-    if (failure && Date.now() - failure.since < LOGIN_WINDOW_MS && failure.count >= LOGIN_MAX_FAILURES) {
-      throw new HttpError(429, '登录失败次数过多，请 15 分钟后再试')
-    }
+    const current = failure && Date.now() - failure.since < LOGIN_WINDOW_MS ? failure : { count: 0, since: Date.now() }
+    if (current.count >= LOGIN_MAX_FAILURES) throw new HttpError(429, '登录失败次数过多，请 15 分钟后再试')
+    // Count the attempt before the slow password check, so parallel guesses cannot share one stale count.
+    this.failures.set(client, { count: current.count + 1, since: current.since })
     const row = this.db.prepare('SELECT password_hash FROM admin WHERE username = ?').get(username) as { password_hash: string } | undefined
     // Always run scrypt so response time does not reveal whether the username exists.
     const valid = await verifyPassword(password, row?.password_hash ?? this.dummyHash) && row !== undefined
-    if (!valid) {
-      const current = failure && Date.now() - failure.since < LOGIN_WINDOW_MS ? failure : { count: 0, since: Date.now() }
-      this.failures.set(client, { count: current.count + 1, since: current.since })
-      throw unauthorized('账号或密码错误')
-    }
+    if (!valid) throw unauthorized('账号或密码错误')
     this.failures.delete(client)
     const token = randomBytes(32).toString('base64url')
     this.sessions.set(token, { username, expires: Date.now() + SESSION_IDLE_MS })

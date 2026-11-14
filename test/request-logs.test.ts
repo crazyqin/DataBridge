@@ -101,19 +101,22 @@ test('call previews retain original values, exact numbers and repeated query par
     assert.match(trace.body!, /9007199254740993/)
     assert.match(trace.body!, /1\.10/)
     assert.equal(JSON.parse(trace.headers)['user-agent'], 'SyntheticClient/1')
-    assert.equal(JSON.parse(trace.headers)['x-custom-ticket'], 'Bearer synthetic-user-ticket')
-    assert.equal(JSON.parse(trace.headers).authorization, 'Bearer synthetic-bare-key')
-    assert.equal(JSON.parse(trace.headers).cookie, 'session=synthetic-cookie')
+    // Credential headers are masked so stored logs cannot replay them; long values keep a short prefix.
+    assert.equal(JSON.parse(trace.headers)['x-custom-ticket'], 'Bearer syn...[REDACTED]')
+    assert.equal(JSON.parse(trace.headers).authorization, 'Bearer syn...[REDACTED]')
+    assert.equal(JSON.parse(trace.headers).cookie, 'session=sy...[REDACTED]')
+    assert.equal(JSON.parse(trace.headers)['x-api-key'], '[REDACTED]')
+    assert.doesNotMatch(trace.headers, /synthetic-user-ticket|synthetic-bare-key|synthetic-cookie|synthetic-api-key/)
     assert.equal(JSON.parse(trace.body!).nested.password, 'hidden-password')
     assert.equal(JSON.parse(trace.body!).serviceAlias, 'synthetic-service-secret')
-    assert.doesNotMatch(JSON.stringify(trace), /\[REDACTED\]/)
+    assert.doesNotMatch(trace.body! + trace.query + trace.url, /\[REDACTED\]/)
     const numeric = callDiagnostics(new Request('https://bridge.example.invalid/open/request-logs', {
       method: 'POST', headers: { 'X-Custom-Ticket': '9007199254740993' },
     }), api)
     numeric.captureBody('{"alias":9007199254740993,"ordinaryNumber":7}')
     assert.match(numeric.trace.body!, /"alias": 9007199254740993/)
     assert.equal(JSON.parse(numeric.trace.body!).ordinaryNumber, 7)
-    assert.doesNotMatch(JSON.stringify(numeric.trace), /\[REDACTED\]/)
+    assert.doesNotMatch(numeric.trace.body!, /\[REDACTED\]/)
   } finally { await f.close() }
 })
 
@@ -186,7 +189,7 @@ test('GET, POST, rejected authorization and invalid parameters retain request de
     assert.deepEqual(JSON.parse(last().responseBody!), await response.json())
     assert.deepEqual(JSON.parse(last().responseHeaders!), Object.fromEntries(response.headers))
     assert.equal(JSON.parse(last().body!).q, 'query-one')
-    assert.equal(JSON.parse(last().headers)['x-api-key'], 'invalid-synthetic-key')
+    assert.equal(JSON.parse(last().headers)['x-api-key'], '[REDACTED]')
     assert.equal(JSON.parse(last().body!).alias, 'invalid-synthetic-key')
     response = await f.app.request('/open/missing?q=missing-input')
     assert.equal(response.status, 404)
@@ -194,12 +197,15 @@ test('GET, POST, rejected authorization and invalid parameters retain request de
     assert.equal(last().path, '/open/missing')
     assert.equal(last().errorStage, 'routing')
     assert.equal(last().api, null)
+    assert.equal(last().headers, '')
+    assert.match(last().bodyNote!, /未匹配/)
     assert.equal(JSON.parse(last().responseBody!).code, 40401)
     assert.equal(f.logs.list({}).items[0].apiId, null)
     const stored = JSON.stringify(f.db.prepare('SELECT detail FROM request_detail_log').all())
-    assert.match(stored, /invalid-synthetic-key/)
+    // Body values stay as sent; only the X-API-Key header itself is masked.
+    assert.match(stored, /"alias.*invalid-synthetic-key/)
+    assert.doesNotMatch(stored, /x-api-key[^,]*invalid-synthetic-key/)
     assert.match(stored, /never-persist/)
-    assert.doesNotMatch(stored, /\[REDACTED\]/)
     assert.doesNotMatch(JSON.stringify(f.logs.list({})), /query-one|missing-input|9007199254740993/)
   } finally { await f.close() }
 })
@@ -290,7 +296,10 @@ test('client address respects proxy trust and stored API snapshots do not follow
     await request()
     const first = f.logs.list({}).items[0]
     assert.equal(f.logs.detail(first.id).request!.clientAddress, 'unknown')
-    f.config.trustProxy = true
+    f.config.trustProxy = 1
+    await request()
+    assert.equal(f.logs.detail(f.logs.list({}).items[0].id).request!.clientAddress, '10.0.0.8')
+    f.config.trustProxy = 2
     await request()
     assert.equal(f.logs.detail(f.logs.list({}).items[0].id).request!.clientAddress, '203.0.113.42')
     f.apis.save(api.id, { ...definition, name: 'Renamed interface', code: 'renamed_interface', version: api.version })

@@ -11,7 +11,7 @@ export interface ExportJob {
   stage: string; detail: string; createdAt: string; expiresAt: string | null
   bytes?: number; sha256?: string; snapshotAt?: string; tableCounts?: Record<string, number>; error?: string
 }
-interface Task { job: ExportJob; directory: string; worker?: Worker; timer?: NodeJS.Timeout }
+interface Task { job: ExportJob; directory: string; worker?: Worker; timer?: NodeJS.Timeout; timedOut?: boolean }
 const OWNED_DIRECTORY = /^[0-9a-f]{8}-[0-9a-f-]{27}$/
 const RETENTION_MS = 60 * 60 * 1000
 const TIMEOUT_MS = 30 * 60 * 1000
@@ -66,8 +66,10 @@ export class Exports {
         timezone: this.config.timezone, logRetentionDays: this.config.logRetentionDays, filename: task.job.filename,
       } })
       task.worker = worker
+      // The exit handler reports the failure, so it knows the termination was a timeout.
       task.timer = setTimeout(() => {
-        void worker.terminate().then(() => this.fail(task, '导出超时，请检查数据规模和磁盘空间后重试'))
+        task.timedOut = true
+        void worker.terminate()
       }, TIMEOUT_MS).unref()
       worker.on('message', (message: { type: string; stage: string; detail: string; bytes: number; sha256: string; snapshotAt: string; tableCounts: Record<string, number> }) => {
         if (!this.tasks.has(id) || task.job.status !== 'RUNNING') return
@@ -81,7 +83,7 @@ export class Exports {
       worker.on('error', () => { void this.fail(task, '导出失败，请检查磁盘空间和配置数据后重试') })
       worker.on('exit', () => {
         task.worker = undefined
-        if (task.job.status === 'RUNNING') void this.fail(task, '导出未完成，请重新生成')
+        if (task.job.status === 'RUNNING') void this.fail(task, task.timedOut ? '导出超时，请检查数据规模和磁盘空间后重试' : '导出未完成，请重新生成')
       })
     } catch {
       await this.fail(task, '无法创建导出任务，请检查磁盘空间和目录权限后重试')

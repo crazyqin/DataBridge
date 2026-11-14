@@ -58,6 +58,13 @@ export class DataSkill {
     request.signal.addEventListener('abort', abort, { once: true })
     if (request.signal.aborted) abort()
     const timer = setTimeout(abort, 60_000)
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      clearTimeout(timer); request.signal.removeEventListener('abort', abort); this.active--
+    }
+    let streaming = false
     try {
       const response = await fetch(`${config.baseUrl}/api/integrations/databridge/${target}`, {
         method: 'POST', redirect: 'manual', signal: controller.signal,
@@ -70,7 +77,18 @@ export class DataSkill {
         throw new HttpError(502, 'Studio 集成服务暂不可用，请检查服务授权和连接')
       }
       const download = target.startsWith('skill-download/') && response.ok
-      const maximum = download ? 64 * 1024 * 1024 : 1024 * 1024
+      if (download) {
+        // Streamed through, so a 64 MiB package is never held in memory; the slot and timeout last until it ends.
+        const length = Number(response.headers.get('content-length'))
+        if (!response.headers.get('content-type')?.startsWith('application/zip') || length > SKILL_MAX_BYTES || !response.body) {
+          await response.body?.cancel()
+          throw new HttpError(502, length > SKILL_MAX_BYTES ? 'Studio 响应超过大小限制' : 'Studio 未返回 Skill 压缩包')
+        }
+        streaming = true
+        return new Response(limited(response.body, SKILL_MAX_BYTES, release),
+          { headers: { 'Content-Type': 'application/zip', 'Cache-Control': 'private, no-store' } })
+      }
+      const maximum = 1024 * 1024
       const reader = response.body?.getReader()
       const chunks: Uint8Array[] = []
       let size = 0
@@ -86,10 +104,6 @@ export class DataSkill {
         } finally { await reader.cancel().catch(() => {}) }
       }
       const bytes = Buffer.concat(chunks)
-      if (download) {
-        if (!response.headers.get('content-type')?.startsWith('application/zip')) throw new HttpError(502, 'Studio 未返回 Skill 压缩包')
-        return new Response(bytes, { headers: { 'Content-Type': 'application/zip', 'Cache-Control': 'private, no-store' } })
-      }
       let result: JsonObject
       try { const value = parse(bytes.toString()); if (!isObject(value)) throw new Error(); result = value }
       catch { throw new HttpError(502, 'Studio 返回无效 JSON') }
@@ -105,7 +119,34 @@ export class DataSkill {
       if (error instanceof HttpError) throw error
       throw new HttpError(controller.signal.aborted ? 504 : 502, 'Studio 转发超时或连接失败')
     } finally {
-      clearTimeout(timer); request.signal.removeEventListener('abort', abort); this.active--
+      if (!streaming) release()
     }
   }
+}
+
+const SKILL_MAX_BYTES = 64 * 1024 * 1024
+
+/** Passes a body through, failing it once more than maximum bytes arrive; done runs exactly once at the end. */
+function limited(body: ReadableStream<Uint8Array>, maximum: number, done: () => void): ReadableStream<Uint8Array> {
+  const reader = body.getReader()
+  let size = 0
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read()
+        if (chunk.done) { done(); controller.close(); return }
+        size += chunk.value.byteLength
+        if (size > maximum) throw new HttpError(502, 'Studio 响应超过大小限制')
+        controller.enqueue(chunk.value)
+      } catch (error) {
+        done()
+        await reader.cancel().catch(() => {})
+        controller.error(error)
+      }
+    },
+    async cancel() {
+      done()
+      await reader.cancel().catch(() => {})
+    },
+  })
 }

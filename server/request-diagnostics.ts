@@ -1,7 +1,7 @@
 import type { Api } from './apis.ts'
 import type { AccessDecision } from './access.ts'
 import { STATUS_CODES } from 'node:http'
-import { diagnosticPreview, plainDiagnostics } from './auth-diagnostics.ts'
+import { diagnosticPreview, maskCredential, plainDiagnostics } from './auth-diagnostics.ts'
 import { parse, stringify, type JsonObject } from './json.ts'
 
 export type CallStage = 'request' | 'routing' | 'access' | 'identity' | 'authorization' | 'query' | 'forward' | 'response' | 'stream'
@@ -41,22 +41,32 @@ export interface CallRequestTrace {
   stream?: CallStreamSummary
 }
 
-/** Capture caller inputs and responses with original values and bounded previews. */
-export function callDiagnostics(request: Request, api?: Api, clientAddress = 'unknown') {
-  const headerPreview = plainDiagnostics.body(stringify(Object.fromEntries(request.headers)))
+const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'x-api-key']
+const UNMATCHED_NOTE = '未匹配到启用的接口，不记录请求内容'
+
+/**
+ * Capture caller inputs and responses with original values and bounded previews.
+ * Credential headers are masked. Without recordContent (requests that match no API) only the URL is kept,
+ * so anonymous traffic cannot fill the log with large previews.
+ */
+export function callDiagnostics(request: Request, api?: Api, clientAddress = 'unknown', recordContent = true) {
+  const credentials = [...CREDENTIAL_HEADERS, api?.externalAuth?.inputHeader.toLowerCase()]
+  const headers = Object.fromEntries([...request.headers].map(([name, value]) =>
+    [name, credentials.includes(name) ? maskCredential(value) : value]))
+  const headerPreview = recordContent ? plainDiagnostics.body(stringify(headers)) : { text: '', truncated: false }
   const url = new URL(request.url)
   const query = Object.fromEntries([...new Set(url.searchParams.keys())].map(name => {
     const values = url.searchParams.getAll(name)
     return [name, values.length === 1 ? values[0] : values]
   }))
-  const queryPreview = plainDiagnostics.body(stringify(query))
+  const queryPreview = recordContent ? plainDiagnostics.body(stringify(query)) : { text: '', truncated: false }
   const address = diagnosticPreview(request.url)
   const trace: CallRequestTrace = {
     method: request.method, path: url.pathname.slice(0, 2000), url: address.text, urlTruncated: address.truncated,
     status: 500, responseType: null,
     headers: headerPreview.text, headersTruncated: headerPreview.truncated,
     query: queryPreview.text, queryTruncated: queryPreview.truncated,
-    body: null, bodyTruncated: false, bodyNote: request.method === 'POST' ? '请求体未读取' : null,
+    body: null, bodyTruncated: false, bodyNote: !recordContent ? UNMATCHED_NOTE : request.method === 'POST' ? '请求体未读取' : null,
     clientAddress: clientAddress.slice(0, 200), api: api ? {
       id: api.id, name: api.name, code: api.code, path: api.path, method: api.method,
       mode: api.mode, auth: api.auth, version: api.version, datasourceId: api.datasourceId,
@@ -71,6 +81,7 @@ export function callDiagnostics(request: Request, api?: Api, clientAddress = 'un
     trace,
     error: (message: string) => message.slice(0, 2000),
     captureBody(raw: string) {
+      if (!recordContent) return
       const preview = plainDiagnostics.body(raw)
       trace.body = preview.text; trace.bodyTruncated = preview.truncated; trace.bodyNote = null
       try { if (raw.trim()) parse(raw) } catch { trace.bodyNote = '请求体不是有效的 JSON，以下为原文预览' }

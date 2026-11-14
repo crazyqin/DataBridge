@@ -65,10 +65,15 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
   let activeQueries = 0
 
   const isHttps = (c: Ctx) => config.secureCookies === 'auto'
-    ? config.trustProxy && c.req.header('X-Forwarded-Proto') === 'https'
+    ? config.trustProxy > 0 && c.req.header('X-Forwarded-Proto') === 'https'
     : config.secureCookies
   const clientAddress = (c: Ctx) => {
-    if (config.trustProxy) return c.req.header('X-Forwarded-For')?.split(',')[0].trim() || 'unknown'
+    if (config.trustProxy > 0) {
+      // Each proxy appends the address it saw, so only the last trustProxy entries are trustworthy;
+      // anything further left was written by the caller.
+      const hops = (c.req.header('X-Forwarded-For') ?? '').split(',').map(entry => entry.trim())
+      return hops[Math.max(0, hops.length - config.trustProxy)] || 'unknown'
+    }
     try {
       return getConnInfo(c).remote.address ?? 'unknown'
     } catch {
@@ -370,7 +375,7 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
     const requestId = c.get('requestId')
     const api = apis.findOpen(c.req.path, c.req.method)
     if (api?.auth === 'EXTERNAL') c.header('Cache-Control', 'private, no-store')
-    const diagnostic = callDiagnostics(c.req.raw, api, clientAddress(c))
+    const diagnostic = callDiagnostics(c.req.raw, api, clientAddress(c), api !== undefined)
     c.set('callDiagnostic', diagnostic)
     let count = 0
     let error: string | null = null
@@ -395,7 +400,7 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
       else if (streamOutcome) writeLog(streamOutcome.failure)
     })
     try {
-      if (!['GET', 'HEAD'].includes(c.req.method)) diagnostic.captureBody(await c.req.text())
+      if (api && !['GET', 'HEAD'].includes(c.req.method)) diagnostic.captureBody(await c.req.text())
       diagnostic.stage('routing')
       if (!api) throw notFound('接口不存在或未启用')
       diagnostic.stage('access')
@@ -405,7 +410,7 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
       if (api.auth === 'EXTERNAL') diagnostic.stage('identity')
       const identity = api.auth === 'EXTERNAL'
         ? await externalAuth.verify(apis.identityConfig(api), api.externalAuth ? c.req.header(api.externalAuth.inputHeader) : undefined,
-          trace => { externalAuthTrace = trace }, { redact: false }) : undefined
+          trace => { externalAuthTrace = trace }, { redact: 'credentials' }) : undefined
       if (api.auth === 'EXTERNAL') {
         diagnostic.stage('authorization')
         apis.directory.authorize(api.accessPolicy, identity, api.version, value => { diagnostic.trace.authorization = value })

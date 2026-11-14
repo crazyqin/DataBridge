@@ -141,8 +141,8 @@ test('saved and draft forwarding authenticate first, encrypt trusted staff, and 
       assert.match(detail.responseBody!, /synthetic person/)
       assert.equal(JSON.parse(detail.responseHeaders!)['cache-control'], 'private, no-store')
       assert.match(detail.body!, /示例查询|previous-test/)
-      assert.equal(JSON.parse(detail.headers).authorization, 'Bearer user-test-token')
-      assert.doesNotMatch(JSON.stringify(detail), /synthetic-platform-key|\[REDACTED\]/)
+      assert.equal(JSON.parse(detail.headers).authorization, '[REDACTED]')
+      assert.doesNotMatch(JSON.stringify(detail), /synthetic-platform-key|user-test-token/)
     })
     await t.test('missing credential, rejected identity or missing staff never contacts the platform', async () => {
       const count = received.length

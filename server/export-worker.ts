@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, closeSync, openSync, writeSync } from 'node:fs'
-import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { backup, DatabaseSync, type SQLOutputValue } from 'node:sqlite'
 import { parentPort, workerData } from 'node:worker_threads'
@@ -170,6 +170,9 @@ async function main() {
   } finally { db.close() }
   progress('archive', '正在压缩并校验导出包')
   await archiveFiles(input.directory, [...files.map(file => file.path), 'manifest.json'], join(input.directory, input.filename))
+  // Staged files hold plaintext secrets and copies of every table; only the archive is kept.
+  const staged = new Set([...files.map(file => file.path.split('/')[0]), 'manifest.json'])
+  for (const name of staged) await rm(join(input.directory, name), { recursive: true, force: true })
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(join(input.directory, input.filename))) hash.update(chunk)
   parentPort!.postMessage({ type: 'ready', bytes: (await stat(join(input.directory, input.filename))).size,

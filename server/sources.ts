@@ -120,6 +120,9 @@ export class Sources {
       max: 5,
       connectionTimeoutMillis: 5000,
       idleTimeoutMillis: 60_000,
+      // TCP keepalive keeps NAT/firewall entries open and detects silently dropped connections.
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
       application_name: 'databridge',
       options: `-c TimeZone=${this.config.timezone} -c DateStyle=ISO,YMD`,
     })

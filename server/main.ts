@@ -37,12 +37,22 @@ const server = serve({ fetch: app.fetch, port: config.port }, info => {
   console.log(`DataBridge listening on port ${info.port} (time zone ${config.timezone})`)
 })
 
+const SHUTDOWN_GRACE_MS = 8000 // below Docker's default 10 s stop timeout
+
 async function shutdown() {
   apis.stopSchedules()
-  server.close()
-  await exports.close()
-  await sources.closeAll()
-  db.close()
+  // Let in-flight calls finish and write their logs; streams still open after the grace period are cut.
+  const grace = setTimeout(() => { if ('closeAllConnections' in server) server.closeAllConnections() }, SHUTDOWN_GRACE_MS)
+  await new Promise(resolve => server.close(resolve))
+  clearTimeout(grace)
+  // Each step runs even if an earlier one fails, so the database is always closed.
+  for (const step of [() => exports.close(), () => sources.closeAll(), () => db.close()]) {
+    try {
+      await step()
+    } catch (error) {
+      console.error('Shutdown step failed:', error)
+    }
+  }
   process.exit(0)
 }
 process.once('SIGTERM', shutdown)

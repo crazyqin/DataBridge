@@ -89,6 +89,8 @@ test('full export includes every table, raw credentials, exact JSON, diagnostic 
     const ready = await completed(f.exports, job.id)
     assert.equal(ready.status, 'READY', ready.error)
     assert.equal(ready.tableCounts!.request_log, 501)
+    // Staged plaintext copies (secret key, decrypted configuration, tables) are removed once archived.
+    assert.deepEqual(await readdir(join(f.dir, '.exports', job.id)), [ready.filename])
     const compressed = await download(f.exports, job.id)
     assert.equal(createHash('sha256').update(compressed).digest('hex'), ready.sha256)
     const archive = unpack(compressed), manifest = archive.json('manifest.json')
