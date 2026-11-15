@@ -52,7 +52,6 @@ async function projectSaved(project: Project) {
   form.value.projectIds = [...new Set([...form.value.projectIds, project.id])]
   creatingProject.value = false
 }
-const activeTab = ref('basic')
 const diagnostics = ref<string[]>([])
 const connectionEditor = ref<{ id?: number; kind: ConnectionKind }>()
 const authConnections = computed(() => connections.value.filter(item => item.kind === 'EXTERNAL_AUTH'))
@@ -97,8 +96,7 @@ function fillTestParams(manual = false) {
   testParams.value = completed
   generatedTestParams = template
 }
-watch(activeTab, tab => { if (tab === 'test') fillTestParams() })
-watch(() => form.value.params, () => { if (activeTab.value === 'test') fillTestParams() }, { deep: true })
+watch([() => form.value.params, parameterized], () => fillTestParams(), { deep: true, immediate: true })
 
 watch(() => form.value.mode, mode => {
   if (mode !== 'XINGCHEN') return
@@ -160,7 +158,7 @@ async function save() {
   let body: Api
   try { body = payload() } catch (error) { ElMessage.error((error as Error).message); return }
   if (!body.name.trim() || body.path === '/open/' || body.auth === 'EXTERNAL' && !body.authConnectionId || forwarding.value && !body.xingchenConnectionId) {
-    activeTab.value = 'basic'
+    window.scrollTo({ top: 0, behavior: 'smooth' })
     return ElMessage.warning('请填写接口名称、路径，并选择需要的连接')
   }
   if (!await confirmDataChanges(body)) return
@@ -229,122 +227,113 @@ onMounted(async () => {
 
 <template>
   <div class="page-head">
-    <div><p class="eyebrow">API WORKSPACE</p><h2>{{ saved?.id ? form.name || '编辑接口' : '创建接口' }}</h2><p>选择连接，填写业务配置，测试后发布。</p></div>
-    <div class="page-actions"><el-button v-if="saved?.id" @click="reload">重新载入</el-button><el-button @click="emit('close')">返回列表</el-button></div>
+    <h2>{{ saved?.id ? form.name || '编辑接口' : '创建接口' }}</h2>
+    <div class="page-actions"><el-button v-if="saved?.id" text @click="reload">重新载入</el-button><el-button @click="emit('close')">返回列表</el-button></div>
   </div>
   <el-form class="api-editor" label-position="top" @submit.prevent="save">
-    <el-tabs v-model="activeTab" class="editor-tabs">
-      <el-tab-pane label="1  基本设置" name="basic">
-        <section class="editor-section">
-          <div class="section-heading"><h3>接口提供什么能力</h3><span>仅显示当前模式需要的设置</span></div>
-          <div class="mode-grid">
-            <button v-for="(label, mode) in MODE_LABELS" :key="mode" type="button" class="mode-card" :class="{ selected: form.mode === mode }" :aria-pressed="form.mode === mode" @click="form.mode = mode">
-              <strong>{{ label }}</strong><span>{{ modeHints[mode] }}</span>
-            </button>
+    <section class="editor-section">
+      <div class="section-heading"><h3>基本信息</h3></div>
+      <div class="mode-grid">
+        <button v-for="(label, mode) in MODE_LABELS" :key="mode" type="button" class="mode-card" :class="{ selected: form.mode === mode }" :aria-pressed="form.mode === mode" @click="form.mode = mode">
+          <strong>{{ label }}</strong><span>{{ modeHints[mode] }}</span>
+        </button>
+      </div>
+      <div class="form-grid" style="margin-top: 24px">
+        <el-form-item label="接口名称" required><el-input v-model="form.name" placeholder="如：通讯录查询" /></el-form-item>
+        <el-form-item label="接口路径" required><el-input v-model="form.path" placeholder="/open/contacts" @blur="fillCode" /></el-form-item>
+      </div>
+      <el-form-item label="调用方式"><el-radio-group v-model="form.method"><el-radio-button value="GET">GET · 查询参数</el-radio-button><el-radio-button value="POST">POST · JSON 请求体</el-radio-button></el-radio-group></el-form-item>
+    </section>
+
+    <section class="editor-section">
+      <div class="section-heading"><h3>谁可以调用</h3></div>
+      <el-form-item>
+        <el-radio-group v-model="form.auth"><el-radio value="EXTERNAL">外部身份验证</el-radio><el-radio value="API_KEY" :disabled="forwarding">API Key</el-radio><el-radio value="PUBLIC" :disabled="forwarding">公开访问</el-radio></el-radio-group>
+      </el-form-item>
+      <el-form-item v-if="form.auth === 'EXTERNAL'" label="身份服务" required>
+        <div class="connection-picker">
+          <el-select v-model="form.authConnectionId" filterable placeholder="选择已配置的身份服务"><el-option v-for="connection in authConnections" :key="connection.id" :label="connection.name" :value="connection.id" /></el-select>
+          <el-button @click="connectionEditor = { kind: 'EXTERNAL_AUTH' }">新建</el-button>
+          <el-button v-if="selectedAuth" text @click="connectionEditor = { kind: 'EXTERNAL_AUTH', id: selectedAuth.id }">编辑</el-button>
+        </div>
+        <div v-if="selectedAuth" class="field-help">调用者通过 {{ selectedAuth.inputHeader }} 提供凭证 · 可使用 {{ selectedAuth.bindings.length }} 个身份字段</div>
+      </el-form-item>
+      <el-form-item v-if="forwarding" label="星辰平台" required>
+        <div class="connection-picker">
+          <el-select v-model="form.xingchenConnectionId" filterable placeholder="选择已配置的星辰平台"><el-option v-for="connection in platforms" :key="connection.id" :label="connection.name" :value="connection.id" /></el-select>
+          <el-button @click="connectionEditor = { kind: 'XINGCHEN' }">新建</el-button>
+          <el-button v-if="selectedPlatform" text @click="connectionEditor = { kind: 'XINGCHEN', id: selectedPlatform.id }">编辑</el-button>
+        </div>
+      </el-form-item>
+      <AccessPolicyForm v-if="form.auth === 'EXTERNAL'" v-model="form.accessPolicy" :bindings="selectedAuth?.bindings" :fixed-binding="forwarding ? form.xingchen?.staffCodeBinding : undefined" />
+      <el-alert v-if="form.auth === 'API_KEY'" title="保存后在「调用密钥」中为 Key 授权此接口，调用方在 X-API-Key 请求头中携带 Key。" type="info" :closable="false" />
+      <el-alert v-if="form.auth === 'PUBLIC'" title="启用后，任何能访问此地址的调用方都可以获取数据。" type="warning" :closable="false" />
+    </section>
+
+    <section class="editor-section">
+      <div class="section-heading"><h3>{{ MODE_LABELS[form.mode] }}</h3></div>
+      <template v-if="sourced">
+        <el-form-item label="数据源" required><el-select v-model="form.datasourceId" placeholder="选择 PostgreSQL 数据源" style="width: 100%"><el-option v-for="source in sources" :key="source.id" :label="source.name" :value="source.id" /></el-select><div v-if="!sources.length" class="field-help">还没有数据源，请先在「连接 → 数据库」中添加。</div></el-form-item>
+        <el-form-item label="SELECT SQL" required><el-input v-model="form.sql" class="mono" type="textarea" :rows="7" :placeholder="form.mode === 'REALTIME' ? 'SELECT id, name FROM customer WHERE id = :id' : 'SELECT id, name FROM product ORDER BY id'" /></el-form-item>
+        <div v-if="form.mode === 'REALTIME' && form.auth === 'EXTERNAL' && selectedAuth?.bindings.length" class="identity-hint"><strong>可用身份参数</strong><div class="tag-list"><code v-for="binding in selectedAuth.bindings" :key="binding.name">:{{ binding.name }}</code></div><p class="muted">直接在 SQL 中引用，调用者不能覆盖。</p></div>
+      </template>
+      <el-form-item v-if="parameterized" label="请求参数"><FieldTable v-model="form.params" add-label="添加参数" /><div v-if="!forwarding" class="field-help">SQL 中用 :参数名 引用。</div></el-form-item>
+      <XingchenForm v-if="forwarding && form.xingchen" v-model="form.xingchen" :params="form.params" :bindings="selectedAuth?.bindings ?? []" />
+      <template v-if="!parameterized">
+        <el-form-item :label="form.mode === 'MANUAL' ? '数据字段' : '需要类型转换的字段（可选）'"><FieldTable v-model="form.fields" /></el-form-item>
+        <el-form-item label="允许按哪些字段过滤"><el-input v-model="lists.filters" placeholder="字段名用逗号分隔，留空不开放过滤" /></el-form-item>
+      </template>
+      <template v-if="form.mode === 'SNAPSHOT'">
+        <el-form-item label="唯一键" required><el-input v-model="lists.keyFields" placeholder="如 id；组合键用逗号分隔" /></el-form-item>
+        <div class="form-grid">
+          <el-form-item label="同步 Cron" required><el-input v-model="form.cron" class="mono" placeholder="秒 分 时 日 月 周" /><div class="field-help">默认每 30 分钟同步一次</div></el-form-item>
+          <el-form-item label="同步时区"><el-input v-model="form.cronTimezone" placeholder="Asia/Shanghai" /></el-form-item>
+        </div>
+        <el-form-item label="允许空结果覆盖快照"><el-switch v-model="form.allowEmpty" /></el-form-item>
+        <div v-if="saved?.id" class="info-strip"><span>上次同步：{{ saved.syncAt ? formatTimeInZone(saved.syncAt, saved.cronTimezone!) : '尚未同步' }} · {{ saved.syncCount ?? 0 }} 行</span><el-button link type="primary" @click="showHistory = true">同步详情</el-button></div>
+        <el-alert v-if="saved?.syncError" :title="saved.syncError" type="error" :closable="false" />
+      </template>
+    </section>
+
+    <section v-if="sourced || forwarding || form.auth === 'EXTERNAL'" class="editor-section">
+      <div class="section-heading"><h3>测试</h3><span>无需先保存{{ forwarding ? ' · 星辰测试使用 blocking 模式' : '' }}</span></div>
+      <el-form-item v-if="form.auth === 'EXTERNAL'" label="身份凭证"><el-input v-model="testCredential" type="password" clearable autocomplete="off" placeholder="输入身份凭证（不含前缀）" /></el-form-item>
+      <el-form-item v-if="parameterized" label="测试参数（JSON）">
+        <el-input v-model="testParams" type="textarea" :autosize="{ minRows: 3, maxRows: 14 }" class="mono" placeholder="{}" />
+        <div class="field-help">已按请求参数生成模板，修改值即可。<el-button link type="primary" @click="fillTestParams(true)">补齐参数模板</el-button></div>
+      </el-form-item>
+      <div class="toolbar">
+        <el-button type="primary" plain :loading="testing" @click="test">{{ forwarding ? '测试星辰转发' : sourced ? '执行 SQL 测试' : '测试身份与权限' }}</el-button>
+        <span v-if="result" class="result-status">{{ result.count === undefined ? '转发完成' : `返回 ${result.count} 行` }} · {{ result.elapsedMs }} ms</span>
+      </div>
+      <el-alert v-if="authorization" :title="`${authorization.allowed ? '允许' : '拒绝'}：${authorization.reason} · ${authorization.rule ?? '—'} · 目录版本 ${authorization.directoryVersion}`" :type="authorization.allowed ? 'success' : 'warning'" :closable="false" />
+      <el-alert v-if="testError" :title="testError" type="error" :closable="false" show-icon />
+      <pre v-if="result" class="result">{{ JSON.stringify(result.response ?? result.rows, null, 2) }}</pre>
+      <el-collapse v-if="authTrace || requestTrace" v-model="diagnostics">
+        <el-collapse-item v-if="authTrace" title="身份服务诊断 · 请求、响应与成功条件" name="auth"><ExternalAuthTrace :trace="authTrace" /></el-collapse-item>
+        <el-collapse-item v-if="requestTrace" title="测试请求详情 · 已脱敏" name="request"><TestRequestTrace :trace="requestTrace" :external-auth="form.auth === 'EXTERNAL'" /></el-collapse-item>
+      </el-collapse>
+    </section>
+    <div v-if="form.mode === 'MANUAL'" class="info-strip">保存后在「数据维护」中录入数据，再启用接口。</div>
+
+    <el-collapse class="advanced-panel"><el-collapse-item title="更多设置 · 编码、项目、超时与 User-Agent" name="advanced">
+      <div class="form-grid">
+        <el-form-item label="接口编码（英文）"><el-input v-model="form.code" maxlength="100" placeholder="留空按接口路径自动生成" /><div class="field-help">以字母开头，可含字母、数字和下划线；不影响调用地址。</div></el-form-item>
+        <el-form-item label="所属项目">
+          <div class="connection-picker">
+            <el-select v-model="form.projectIds" multiple filterable clearable collapse-tags collapse-tags-tooltip :max-collapse-tags="3" placeholder="未归类">
+              <el-option v-for="project in projects" :key="project.id" :value="project.id" :label="project.name" />
+            </el-select>
+            <el-button @click="creatingProject = true">新建项目</el-button>
           </div>
-          <div class="form-grid" style="margin-top: 24px">
-            <el-form-item label="接口名称" required><el-input v-model="form.name" placeholder="如：通讯录查询" /></el-form-item>
-            <el-form-item label="接口路径" required><el-input v-model="form.path" placeholder="/open/contacts" @blur="fillCode" /></el-form-item>
-            <el-form-item label="接口编码（英文）"><el-input v-model="form.code" maxlength="100" placeholder="留空按接口路径自动生成" /><div class="field-help">可直接修改，包括复制后的 _copy 后缀。以字母开头，可含字母、数字和下划线；编码不影响调用地址。</div></el-form-item>
-          </div>
-          <el-form-item label="所属项目">
-            <div class="connection-picker">
-              <el-select v-model="form.projectIds" multiple filterable clearable collapse-tags collapse-tags-tooltip :max-collapse-tags="3" placeholder="未归类，可选择多个项目">
-                <el-option v-for="project in projects" :key="project.id" :value="project.id" :label="project.name" />
-              </el-select>
-              <el-button @click="creatingProject = true">新建项目</el-button>
-            </div>
-            <div class="field-help">将同一 skill 或业务功能使用的接口放在一起，一个接口可加入多个项目。</div>
-          </el-form-item>
-          <el-form-item label="调用方式"><el-radio-group v-model="form.method"><el-radio-button value="GET">GET · 查询参数</el-radio-button><el-radio-button value="POST">POST · JSON 请求体</el-radio-button></el-radio-group></el-form-item>
-        </section>
-        <section class="editor-section">
-          <div class="section-heading"><h3>选择连接与访问方式</h3><span>共享配置在连接管理中统一维护</span></div>
-          <el-form-item label="谁可以调用">
-            <el-radio-group v-model="form.auth"><el-radio value="EXTERNAL">外部身份验证</el-radio><el-radio value="API_KEY" :disabled="forwarding">API Key</el-radio><el-radio value="PUBLIC" :disabled="forwarding">公开访问</el-radio></el-radio-group>
-          </el-form-item>
-          <el-form-item v-if="form.auth === 'EXTERNAL'" label="身份服务" required>
-            <div class="connection-picker">
-              <el-select v-model="form.authConnectionId" filterable placeholder="选择已配置的身份服务"><el-option v-for="connection in authConnections" :key="connection.id" :label="connection.name" :value="connection.id" /></el-select>
-              <el-button @click="connectionEditor = { kind: 'EXTERNAL_AUTH' }">新建连接</el-button>
-              <el-button v-if="selectedAuth" text @click="connectionEditor = { kind: 'EXTERNAL_AUTH', id: selectedAuth.id }">编辑共享配置</el-button>
-            </div>
-            <div v-if="selectedAuth" class="field-help">调用者通过 {{ selectedAuth.inputHeader }} 提供凭证 · 可使用 {{ selectedAuth.bindings.length }} 个身份字段</div>
-            <div v-else class="field-help">验证地址、签名和成功条件只需在连接中配置一次。</div>
-          </el-form-item>
-          <el-form-item v-if="forwarding" label="星辰平台" required>
-            <div class="connection-picker">
-              <el-select v-model="form.xingchenConnectionId" filterable placeholder="选择已配置的星辰平台"><el-option v-for="connection in platforms" :key="connection.id" :label="connection.name" :value="connection.id" /></el-select>
-              <el-button @click="connectionEditor = { kind: 'XINGCHEN' }">新建连接</el-button>
-              <el-button v-if="selectedPlatform" text @click="connectionEditor = { kind: 'XINGCHEN', id: selectedPlatform.id }">编辑共享配置</el-button>
-            </div>
-            <div class="field-help">基础地址由连接统一提供。应用 ID、密钥和公钥在业务配置中填写。</div>
-          </el-form-item>
-          <AccessPolicyForm v-if="form.auth === 'EXTERNAL'" v-model="form.accessPolicy" :bindings="selectedAuth?.bindings" :fixed-binding="forwarding ? form.xingchen?.staffCodeBinding : undefined" />
-          <el-alert v-if="form.auth === 'API_KEY'" title="保存接口后，请在「配置中心 → 调用密钥」中为 Key 授权此接口。调用方需在 X-API-Key 请求头中携带已获授权的 Key。" type="info" :closable="false" />
-          <el-alert v-if="form.auth === 'PUBLIC'" title="启用后，任何能访问此地址的调用方都可以获取数据。" type="info" :closable="false" />
-        </section>
-        <el-button type="primary" @click="activeTab = 'business'">下一步：业务配置 →</el-button>
-      </el-tab-pane>
-      <el-tab-pane label="2  业务配置" name="business">
-        <section class="editor-section">
-          <div class="section-heading"><h3>{{ MODE_LABELS[form.mode] }}</h3><span>{{ modeHints[form.mode] }}</span></div>
-          <template v-if="sourced">
-            <el-form-item label="PostgreSQL 数据源" required><el-select v-model="form.datasourceId" placeholder="选择数据源" style="width: 100%"><el-option v-for="source in sources" :key="source.id" :label="source.name" :value="source.id" /></el-select><div v-if="!sources.length" class="field-help">请先在左侧「数据源」中添加 PostgreSQL 连接。</div></el-form-item>
-            <el-form-item label="SELECT SQL" required><el-input v-model="form.sql" class="mono" type="textarea" :rows="7" :placeholder="form.mode === 'REALTIME' ? 'SELECT id, name FROM customer WHERE id = :id' : 'SELECT id, name FROM product ORDER BY id'" /></el-form-item>
-            <div v-if="form.mode === 'REALTIME' && form.auth === 'EXTERNAL' && selectedAuth?.bindings.length" class="identity-hint"><strong>可用身份参数</strong><div class="tag-list"><code v-for="binding in selectedAuth.bindings" :key="binding.name">:{{ binding.name }}</code></div><p class="muted">直接在 SQL 中引用。调用者不能覆盖这些值，无需再声明为请求参数。</p></div>
-          </template>
-          <el-form-item v-if="parameterized" label="调用者请求参数"><FieldTable v-model="form.params" add-label="添加参数" /><div class="field-help">{{ forwarding ? '先定义调用者参数，再在下方映射到智能体变量。' : 'SQL 用 :参数名 引用，身份参数由所选服务提供。' }}</div></el-form-item>
-          <XingchenForm v-if="forwarding && form.xingchen" v-model="form.xingchen" :params="form.params" :bindings="selectedAuth?.bindings ?? []" />
-          <template v-if="!parameterized">
-            <el-form-item :label="form.mode === 'MANUAL' ? '数据字段' : '需要类型转换的字段'"><FieldTable v-model="form.fields" /><div v-if="form.mode === 'SNAPSHOT'" class="field-help">可选；需要过滤的字段必须声明类型。</div></el-form-item>
-            <el-form-item label="允许按哪些字段过滤"><el-input v-model="lists.filters" placeholder="字段名用逗号分隔，留空不开放过滤" /></el-form-item>
-          </template>
-          <template v-if="form.mode === 'SNAPSHOT'">
-            <el-form-item label="唯一键" required><el-input v-model="lists.keyFields" placeholder="如 id；组合键用逗号分隔" /></el-form-item>
-            <div class="form-grid">
-              <el-form-item label="同步 Cron" required><el-input v-model="form.cron" class="mono" placeholder="秒 分 时 日 月 周" /><div class="field-help">默认每 30 分钟同步一次</div></el-form-item>
-              <el-form-item label="同步时区"><el-input v-model="form.cronTimezone" placeholder="Asia/Shanghai" /></el-form-item>
-            </div>
-            <el-form-item label="允许空结果覆盖快照"><el-switch v-model="form.allowEmpty" /></el-form-item>
-            <div v-if="saved?.id" class="info-strip"><span>上次同步：{{ saved.syncAt ? formatTimeInZone(saved.syncAt, saved.cronTimezone!) : '尚未同步' }} · {{ saved.syncCount ?? 0 }} 行</span><el-button link type="primary" @click="showHistory = true">同步详情</el-button></div>
-            <el-alert v-if="saved?.syncError" :title="saved.syncError" type="error" :closable="false" />
-          </template>
-        </section>
-        <el-collapse class="advanced-panel"><el-collapse-item title="高级设置 · 超时、行数与 User-Agent" name="advanced">
-          <div class="form-grid">
-            <el-form-item v-if="sourced || forwarding" label="请求超时（秒）"><el-input-number v-model="form.timeoutSeconds" :min="1" :max="120" /></el-form-item>
-            <el-form-item v-if="!forwarding" label="最大行数"><el-input-number v-model="form.maxRows" :min="1" :max="1000000" /></el-form-item>
-          </div>
-          <el-form-item label="允许的 User-Agent"><el-input v-model="lists.userAgents" type="textarea" :rows="2" placeholder="留空不限制；每行一条，末尾 * 表示前缀匹配" /><div class="field-help">客户端可自行设置 User-Agent，此项仅用于兼容性限制。</div></el-form-item>
-        </el-collapse-item></el-collapse>
-        <div class="page-actions"><el-button @click="activeTab = 'basic'">← 基本设置</el-button><el-button type="primary" @click="activeTab = 'test'">下一步：测试发布 →</el-button></div>
-      </el-tab-pane>
-      <el-tab-pane label="3  测试发布" name="test">
-        <section class="editor-section">
-          <div class="section-heading"><h3>{{ form.mode === 'MANUAL' ? '发布前确认' : '测试当前配置' }}</h3><span v-if="sourced || forwarding">无需先保存{{ forwarding ? ' · 星辰测试使用 blocking 模式' : '' }}</span></div>
-          <div class="publish-preview"><span class="method-badge">{{ form.method }}</span><code>{{ form.path }}</code><el-tag type="info">{{ MODE_LABELS[form.mode] }}</el-tag></div>
-          <el-form-item v-if="form.auth === 'EXTERNAL'" label="本次测试的身份凭证"><el-input v-model="testCredential" type="password" clearable autocomplete="off" placeholder="输入身份凭证（不含前缀）" /><div class="field-help">所选身份服务：{{ selectedAuth?.name || '尚未选择' }} · 执行测试时会先验证身份。凭证在当前编辑页保留，可反复测试。</div></el-form-item>
-          <el-form-item v-if="parameterized" label="测试参数（JSON）">
-            <el-input v-model="testParams" type="textarea" :autosize="{ minRows: 4, maxRows: 14 }" class="mono" placeholder="{}" />
-            <div class="field-help">已按业务参数生成模板，修改值即可；补齐模板会保留已填写内容。<el-button link type="primary" @click="fillTestParams(true)">补齐参数模板</el-button></div>
-          </el-form-item>
-          <div v-if="sourced || forwarding || form.auth === 'EXTERNAL'" class="toolbar">
-            <el-button type="primary" :loading="testing" @click="test">{{ forwarding ? '测试星辰转发' : sourced ? '执行 SQL 测试' : '测试身份与权限' }}</el-button>
-            <span v-if="result" class="result-status">{{ result.count === undefined ? '转发完成' : `返回 ${result.count} 行` }} · {{ result.elapsedMs }} ms</span>
-          </div>
-          <el-alert v-if="authorization" :title="`${authorization.allowed ? '允许' : '拒绝'}：${authorization.reason} · ${authorization.rule ?? '—'} · 目录版本 ${authorization.directoryVersion}`" :type="authorization.allowed ? 'success' : 'warning'" :closable="false" />
-          <el-alert v-if="testError" :title="testError" type="error" :closable="false" show-icon />
-          <div v-if="form.mode === 'MANUAL'" class="info-strip">保存后前往「数据维护」录入数据，再启用接口。</div>
-          <pre v-if="result" class="result">{{ JSON.stringify(result.response ?? result.rows, null, 2) }}</pre>
-          <el-collapse v-if="authTrace || requestTrace" v-model="diagnostics">
-            <el-collapse-item v-if="authTrace" title="身份服务诊断 · 请求、响应与成功条件" name="auth"><ExternalAuthTrace :trace="authTrace" /></el-collapse-item>
-            <el-collapse-item v-if="requestTrace" title="测试请求详情 · 已脱敏" name="request"><TestRequestTrace :trace="requestTrace" :external-auth="form.auth === 'EXTERNAL'" /></el-collapse-item>
-          </el-collapse>
-        </section>
-      </el-tab-pane>
-    </el-tabs>
-    <div class="editor-footer"><div><el-switch v-model="form.enabled" active-text="启用接口" /><span class="muted">{{ form.enabled ? '保存后可通过接口地址调用' : '保存为草稿，暂不对外提供服务' }}</span></div><el-button type="primary" native-type="submit" :loading="saving">{{ form.enabled ? '保存并启用' : '保存草稿' }}</el-button></div>
+        </el-form-item>
+        <el-form-item v-if="sourced || forwarding" label="请求超时（秒）"><el-input-number v-model="form.timeoutSeconds" :min="1" :max="120" /></el-form-item>
+        <el-form-item v-if="!forwarding" label="最大行数"><el-input-number v-model="form.maxRows" :min="1" :max="1000000" /></el-form-item>
+      </div>
+      <el-form-item label="允许的 User-Agent"><el-input v-model="lists.userAgents" type="textarea" :rows="2" placeholder="留空不限制；每行一条，末尾 * 表示前缀匹配" /></el-form-item>
+    </el-collapse-item></el-collapse>
+
+    <div class="editor-footer"><div><el-switch v-model="form.enabled" active-text="启用接口" /><span class="muted">{{ form.enabled ? '保存后立即可调用' : '保存为草稿，暂不对外提供服务' }}</span></div><el-button type="primary" native-type="submit" :loading="saving">{{ form.enabled ? '保存并启用' : '保存草稿' }}</el-button></div>
   </el-form>
   <ConnectionEditor v-if="connectionEditor" :key="`${connectionEditor.kind}-${connectionEditor.id}`" :id="connectionEditor.id" :kind="connectionEditor.kind" @close="connectionEditor = undefined" @saved="connectionSaved" />
   <SyncHistoryDialog v-if="showHistory && saved?.id" :api="saved" @close="showHistory = false" />

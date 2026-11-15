@@ -2,13 +2,21 @@
 import { computed, onMounted, ref } from 'vue'
 import { confirm, CONNECTION_LABELS, formatTime, request, type ConnectionKind, type ConnectionSummary } from '../api'
 import ConnectionEditor from './ConnectionEditor.vue'
+import Sources from './Sources.vue'
 import UiIcon from '../components/UiIcon.vue'
+const props = defineProps<{ databases?: boolean }>()
 const connections = ref<ConnectionSummary[]>([])
 const search = ref('')
-const kind = ref<ConnectionKind | ''>('')
+const kind = ref<ConnectionKind | 'DATABASE'>(props.databases ? 'DATABASE' : 'EXTERNAL_AUTH')
+const sources = ref<InstanceType<typeof Sources>>()
+const count = (value: ConnectionKind) => connections.value.filter(item => item.kind === value).length
+function create() {
+  if (kind.value === 'DATABASE') sources.value?.edit()
+  else editor.value = { kind: kind.value }
+}
 const loading = ref(false)
 const editor = ref<{ id?: number; kind: ConnectionKind }>()
-const visible = computed(() => connections.value.filter(item => (!kind.value || item.kind === kind.value) && item.name.toLowerCase().includes(search.value.toLowerCase())))
+const visible = computed(() => connections.value.filter(item => item.kind === kind.value && item.name.toLowerCase().includes(search.value.toLowerCase())))
 async function load() {
   loading.value = true
   try { connections.value = await request<ConnectionSummary[]>('/admin/connections') } finally { loading.value = false }
@@ -22,18 +30,21 @@ onMounted(load)
 
 <template>
   <div class="page-head">
-    <div><p class="eyebrow">SHARED CONNECTIONS</p><h2>连接管理</h2><p>统一维护身份服务、星辰平台和 DataSkill Studio。</p></div>
-    <div class="page-actions"><el-button @click="editor = { kind: 'DATASKILL' }"><UiIcon name="plus" />新建 DataSkill Studio</el-button><el-button @click="editor = { kind: 'XINGCHEN' }"><UiIcon name="plus" />新建星辰平台</el-button><el-button type="primary" @click="editor = { kind: 'EXTERNAL_AUTH' }"><UiIcon name="plus" />新建身份服务</el-button></div>
+    <h2>连接</h2>
+    <el-button type="primary" @click="create"><UiIcon name="plus" />新建{{ kind === 'DATABASE' ? '数据库' : CONNECTION_LABELS[kind] }}</el-button>
   </div>
-  <div class="info-strip"><span class="info-mark">i</span><span>已有 API 的配置会自动归入这里。修改连接后关联接口立即生效；正在使用的连接不能删除。</span></div>
-  <el-card shadow="never" v-loading="loading">
+  <el-radio-group v-model="kind" class="connection-tabs">
+    <el-radio-button v-for="value in (['EXTERNAL_AUTH', 'XINGCHEN', 'DATASKILL'] as const)" :key="value" :value="value">{{ CONNECTION_LABELS[value] }}<span class="tab-count">{{ count(value) }}</span></el-radio-button>
+    <el-radio-button value="DATABASE">数据库</el-radio-button>
+  </el-radio-group>
+  <Sources v-if="kind === 'DATABASE'" ref="sources" />
+  <el-card v-else shadow="never" v-loading="loading">
     <div class="table-toolbar">
       <el-input v-model="search" clearable placeholder="搜索连接名称" style="max-width: 320px"><template #prefix><UiIcon name="search" /></template></el-input>
-      <el-radio-group v-model="kind"><el-radio-button value="">全部</el-radio-button><el-radio-button value="EXTERNAL_AUTH">身份服务</el-radio-button><el-radio-button value="XINGCHEN">星辰平台</el-radio-button><el-radio-button value="DATASKILL">DataSkill Studio</el-radio-button></el-radio-group>
-      <span class="muted toolbar-count">{{ visible.length }} 个连接</span>
+      <span class="muted toolbar-count">修改后关联接口立即生效</span>
     </div>
-    <el-table :data="visible" empty-text="暂无匹配连接，可在右上角新建">
-      <el-table-column label="连接" min-width="220"><template #default="{ row }"><strong>{{ row.name }}</strong><div class="muted">{{ CONNECTION_LABELS[row.kind as ConnectionKind] }}</div></template></el-table-column>
+    <el-table :data="visible" :empty-text="`还没有${CONNECTION_LABELS[kind]}，点击右上角新建`">
+      <el-table-column label="名称" min-width="220"><template #default="{ row }"><strong>{{ row.name }}</strong></template></el-table-column>
       <el-table-column label="使用范围" min-width="240"><template #default="{ row }">
         <div v-if="row.usedBy.length" class="tag-list"><el-tag v-for="api in row.usedBy.slice(0, 3)" :key="api.id" type="info">{{ api.name }}</el-tag><span v-if="row.usedBy.length > 3" class="muted">等 {{ row.usedBy.length }} 个接口</span></div>
         <div v-if="row.usedByConnections.length" class="tag-list"><el-tag v-for="connection in row.usedByConnections" :key="connection.id" type="info">Studio：{{ connection.name }}</el-tag></div>
@@ -41,11 +52,17 @@ onMounted(load)
         <span v-else-if="!row.usedBy.length && !row.usedByConnections.length" class="muted">尚未被使用</span>
       </template></el-table-column>
       <el-table-column label="更新时间" min-width="175"><template #default="{ row }">{{ formatTime(row.updatedAt) }}</template></el-table-column>
-      <el-table-column label="操作" width="155"><template #default="{ row }">
-        <el-button link type="primary" @click="editor = { id: row.id, kind: row.kind }">编辑配置</el-button>
-        <el-tooltip :disabled="!row.usedBy.length && !row.usedByConnections.length && !row.activeIntegration" content="请先解除连接引用，或停用 Studio 反馈入口"><span><el-button link type="danger" :disabled="!!row.usedBy.length || !!row.usedByConnections.length || row.activeIntegration" @click="remove(row)">删除</el-button></span></el-tooltip>
+      <el-table-column label="操作" width="130"><template #default="{ row }">
+        <el-button link type="primary" @click="editor = { id: row.id, kind: row.kind }">编辑</el-button>
+        <el-tooltip :disabled="!row.usedBy.length && !row.usedByConnections.length && !row.activeIntegration" content="正在使用的连接不能删除：请先解除接口引用，或停用 Studio 反馈入口"><span><el-button link type="danger" :disabled="!!row.usedBy.length || !!row.usedByConnections.length || row.activeIntegration" @click="remove(row)">删除</el-button></span></el-tooltip>
       </template></el-table-column>
     </el-table>
   </el-card>
   <ConnectionEditor v-if="editor" :key="`${editor.kind}-${editor.id}`" :id="editor.id" :kind="editor.kind" @close="editor = undefined" @saved="editor = undefined; load()" />
 </template>
+
+<style scoped>
+.connection-tabs { margin-bottom: 16px; flex-wrap: wrap; }
+.tab-count { margin-left: 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.connection-tabs :deep(.is-active) .tab-count { color: inherit; opacity: .8; }
+</style>

@@ -7,7 +7,7 @@ const fields = defineModel<Field[]>({ required: true })
 
 <template>
   <div style="width: 100%">
-    <el-table :data="fields" size="small" empty-text="暂无字段">
+    <el-table :data="fields" size="small" class="field-table" empty-text="暂无，点击下方添加">
       <el-table-column label="字段名">
         <template #default="{ row }"><el-input v-model="row.name" /></template>
       </el-table-column>
@@ -26,3 +26,7 @@ const fields = defineModel<Field[]>({ required: true })
     <el-button text type="primary" @click="fields.push({ name: '', type: 'string', required: false })">+ {{ addLabel ?? '添加字段' }}</el-button>
   </div>
 </template>
+
+<style scoped>
+.field-table :deep(.el-table__empty-block) { min-height: 60px; }
+</style>

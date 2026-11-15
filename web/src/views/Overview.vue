@@ -29,7 +29,7 @@ onMounted(load)
 </script>
 <template>
   <div v-loading="loading">
-    <div class="page-head"><div><p class="eyebrow">WORKSPACE OVERVIEW</p><h2>工作台</h2><p>连接、接口与运行状态，集中查看。</p></div><div class="page-actions"><el-button :loading="loading" @click="load"><UiIcon v-if="!loading" name="refresh" />刷新</el-button><el-button type="primary" @click="emit('create')"><UiIcon name="plus" />创建接口</el-button></div></div>
+    <div class="page-head"><h2>工作台</h2><div class="page-actions"><el-button :loading="loading" @click="load"><UiIcon v-if="!loading" name="refresh" />刷新</el-button><el-button type="primary" @click="emit('create')"><UiIcon name="plus" />创建接口</el-button></div></div>
     <div class="metric-grid">
       <button class="metric-card" @click="emit('navigate', 'apis')"><span class="metric-label">已启用接口<span class="metric-icon"><UiIcon name="apis" /></span></span><strong>{{ active }}<small>/ {{ apis.length }}</small></strong><em>查看全部接口<UiIcon name="arrow" /></em></button>
       <button class="metric-card tone-violet" @click="emit('navigate', 'connections')"><span class="metric-label">共享连接<span class="metric-icon"><UiIcon name="connections" /></span></span><strong>{{ connections.length }}</strong><em>身份服务、星辰与 Studio<UiIcon name="arrow" /></em></button>
@@ -40,15 +40,15 @@ onMounted(load)
         <em>{{ stats ? '查看失败日志' : '统计暂不可用，请刷新' }}<UiIcon v-if="stats" name="arrow" /></em>
       </button>
     </div>
-    <section class="editor-section onboarding">
-      <div class="section-heading"><h3>{{ apis.length ? '常用操作' : '从一个连接开始' }}</h3><span>连接只配置一次，多个 API 可直接选用</span></div>
+    <section v-if="!loading && !apis.length" class="editor-section onboarding">
+      <div class="section-heading"><h3>三步开始</h3></div>
       <div class="setup-grid">
-        <button class="setup-card" @click="emit('navigate', 'connections')"><span class="setup-icon"><UiIcon name="connections" /></span><div><strong>准备共享连接</strong><p>配置身份服务、星辰或 DataSkill Studio。</p><span class="setup-state">{{ ready ? '管理已有连接' : '添加第一个连接' }}<UiIcon name="arrow" /></span></div></button>
-        <button class="setup-card" @click="emit('create')"><span class="setup-icon"><UiIcon name="plus" /></span><div><strong>创建业务接口</strong><p>选择模式和连接，填写业务参数。</p><span class="setup-state">创建接口<UiIcon name="arrow" /></span></div></button>
-        <button class="setup-card" @click="emit('navigate', 'logs')"><span class="setup-icon"><UiIcon name="logs" /></span><div><strong>测试与观察</strong><p>发布后通过日志查看调用结果。</p><span class="setup-state">查看运行记录<UiIcon name="arrow" /></span></div></button>
+        <button class="setup-card" @click="emit('navigate', 'connections')"><span class="setup-icon"><UiIcon name="connections" /></span><div><strong>1. 准备连接</strong><p>添加数据库，或身份服务、星辰平台。</p><span class="setup-state">{{ ready ? '管理已有连接' : '添加第一个连接' }}<UiIcon name="arrow" /></span></div></button>
+        <button class="setup-card" @click="emit('create')"><span class="setup-icon"><UiIcon name="plus" /></span><div><strong>2. 创建接口</strong><p>选择模式，填写业务配置并测试。</p><span class="setup-state">创建接口<UiIcon name="arrow" /></span></div></button>
+        <button class="setup-card" @click="emit('navigate', 'logs')"><span class="setup-icon"><UiIcon name="logs" /></span><div><strong>3. 查看调用</strong><p>启用后在调用日志中查看结果。</p><span class="setup-state">查看运行记录<UiIcon name="arrow" /></span></div></button>
       </div>
     </section>
-    <el-card shadow="never"><div class="section-heading"><h3>最近调用</h3><el-button text @click="emit('navigate', 'logs')">全部日志 →</el-button></div>
+    <el-card shadow="never"><div class="section-heading"><h3>最近调用</h3><el-button text @click="emit('navigate', 'logs')">全部日志<UiIcon name="arrow" class="trailing-icon" /></el-button></div>
       <el-table :data="logs" empty-text="接口开始接收请求后，最近调用会显示在这里">
         <el-table-column label="接口" min-width="160"><template #default="{ row }">{{ apiName(row.apiId) }}</template></el-table-column>
         <el-table-column label="时间" min-width="175"><template #default="{ row }">{{ formatTime(row.at) }}</template></el-table-column>

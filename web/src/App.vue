@@ -6,24 +6,38 @@ import Apis from './views/Apis.vue'
 import Keys from './views/Keys.vue'
 import Logs from './views/Logs.vue'
 import Rows from './views/Rows.vue'
-import Sources from './views/Sources.vue'
 import Connections from './views/Connections.vue'
 import Overview from './views/Overview.vue'
 import UiIcon from './components/UiIcon.vue'
+import UserMenu from './components/UserMenu.vue'
 import Exports from './views/Exports.vue'
 import Directory from './views/Directory.vue'
 
-const pages = { overview: '工作台', apis: '接口管理', rows: '数据维护', logs: '调用日志', connections: '连接管理', sources: '数据源', directory: '人员目录', keys: '调用密钥', exports: '完整导出' } as const
+const pages = { overview: '工作台', apis: '接口管理', rows: '数据维护', logs: '调用日志', connections: '连接', directory: '人员目录', keys: '调用密钥', exports: '完整导出' } as const
 type Page = keyof typeof pages
+const workspace = ['overview', 'apis', 'rows', 'logs'] as const
+const settings = ['connections', 'directory', 'keys'] as const
+const icons = { overview: 'overview', apis: 'apis', rows: 'rows', logs: 'logs', connections: 'connections', directory: 'user', keys: 'keys', exports: 'exports' } as const
 
 const username = ref<string>()
 const checking = ref(true)
 const page = ref<Page>('overview')
 const createApi = ref(false)
 const failedWindow = ref<LogWindow>()
-function navigate(next: Page) { createApi.value = false; failedWindow.value = undefined; page.value = next }
+const showDatabases = ref(false)
+function navigate(next: Page | 'sources') {
+  createApi.value = false
+  failedWindow.value = undefined
+  showDatabases.value = next === 'sources'
+  page.value = next === 'sources' ? 'connections' : next
+}
 function showFailures(window: LogWindow) { failedWindow.value = window; page.value = 'logs' }
 function startApi() { createApi.value = true; page.value = 'apis' }
+function userCommand(command: string) {
+  if (command === 'password') password.open = true
+  else if (command === 'exports') navigate('exports')
+  else signOut()
+}
 const login = reactive({ username: '', password: '', busy: false })
 const password = reactive({ open: false, current: '', next: '', confirm: '', busy: false })
 
@@ -81,27 +95,26 @@ onMounted(async () => {
   </div>
 
   <el-container v-else-if="username" class="layout">
-    <el-aside width="208px" class="sidebar">
+    <el-aside width="200px" class="sidebar">
       <div class="sidebar-brand"><span class="brand-symbol"><UiIcon name="bridge" /></span><div>数桥 <small>DataBridge</small></div></div>
       <el-menu :default-active="page" @select="navigate($event as Page)">
-        <el-menu-item-group title="工作空间"><el-menu-item v-for="key in (['overview', 'apis', 'rows', 'logs'] as const)" :key="key" :index="key"><UiIcon :name="key" />{{ pages[key] }}</el-menu-item></el-menu-item-group>
-        <el-menu-item-group title="配置中心"><el-menu-item v-for="key in (['connections', 'sources', 'directory', 'keys', 'exports'] as const)" :key="key" :index="key"><UiIcon :name="key === 'directory' ? 'user' : key" />{{ pages[key] }}</el-menu-item></el-menu-item-group>
+        <el-menu-item v-for="key in workspace" :key="key" :index="key"><UiIcon :name="icons[key]" />{{ pages[key] }}</el-menu-item>
+        <div class="menu-divider"></div>
+        <el-menu-item v-for="key in settings" :key="key" :index="key"><UiIcon :name="icons[key]" />{{ pages[key] }}</el-menu-item>
       </el-menu>
-      <div class="sidebar-footer"><span class="status-dot"></span> DataBridge <span>v1.7.1</span></div>
+      <div class="sidebar-footer">
+        <UserMenu :username="username" placement="top-start" @command="userCommand" />
+        <span>v1.7.1</span>
+      </div>
     </el-aside>
     <el-container>
       <el-header class="topbar">
-        <div class="breadcrumb"><span>{{ ['connections', 'sources', 'directory', 'keys', 'exports'].includes(page) ? '配置中心' : '工作空间' }}</span><span>/</span><strong>{{ pages[page] }}</strong></div><el-select class="mobile-nav" :model-value="page" aria-label="导航" @update:model-value="navigate($event as Page)"><el-option v-for="(label, key) in pages" :key="key" :value="key" :label="label" /></el-select>
-        <div class="topbar-actions">
-          <span class="user-chip"><span class="user-avatar">{{ username.slice(0, 1).toUpperCase() }}</span>{{ username }}</span>
-          <el-button text @click="password.open = true">修改密码</el-button>
-          <el-button text @click="signOut"><UiIcon name="logout" />退出</el-button>
-        </div>
+        <el-select class="mobile-nav" :model-value="page" aria-label="导航" @update:model-value="navigate($event as Page)"><el-option v-for="key in [...workspace, ...settings]" :key="key" :value="key" :label="pages[key]" /></el-select>
+        <UserMenu :username="username" placement="bottom-end" @command="userCommand" />
       </el-header>
       <el-main>
         <Overview v-if="page === 'overview'" @navigate="navigate" @create="startApi" @failures="showFailures" />
-        <Connections v-else-if="page === 'connections'" />
-        <Sources v-else-if="page === 'sources'" />
+        <Connections v-else-if="page === 'connections'" :databases="showDatabases" />
         <Directory v-else-if="page === 'directory'" />
         <Apis v-else-if="page === 'apis'" :initial-create="createApi" />
         <Rows v-else-if="page === 'rows'" />

@@ -78,16 +78,10 @@ onUnmounted(() => { disposed = true; if (timer) clearTimeout(timer) })
 
 <template>
   <div class="page-head">
-    <div><p class="eyebrow">DATA EXPORT</p><h2>完整导出</h2><p>下载全部已保存的原始数据，用于日志分析、研究与论文写作</p></div>
+    <div><h2>完整导出</h2><p>打包下载全部配置、业务数据和调用日志，附 CSV / JSONL / SQLite 及分析示例</p></div>
     <el-button type="primary" :loading="starting" :disabled="running" @click="start"><UiIcon name="exports" />生成完整导出包</el-button>
   </div>
-  <div class="export-contents">
-    <el-card shadow="never"><h3>配置与业务数据</h3><p>接口定义与 SQL、项目分组、连接与数据源配置、调用密钥授权，以及手工和快照数据。</p></el-card>
-    <el-card shadow="never"><h3>日志与完整诊断</h3><p>全部已保存的调用、同步历史、请求响应预览、身份验证详情及调用时接口快照。</p></el-card>
-    <el-card shadow="never"><h3>直接用于分析</h3><p>JSONL、CSV、SQLite 快照、字段说明和 Python 示例，附成功率、耗时分位数、按接口及按日统计。</p></el-card>
-  </div>
-  <el-alert title="完整原始导出，不做脱敏" description="包含已保存的凭据、内部地址、业务原文及数据库加密密钥。导出当前保存的全部数据，不受日志列表筛选与分页影响。" type="info" :closable="false" class="export-notice" />
-  <p class="export-note">已清理的历史日志、此前截断的响应和未保存的 SSE 正文无法补回；不额外查询外部数据源。完成后可下载 1 小时，最多保留最近 3 个任务，服务重启后需重新生成。</p>
+  <el-alert title="导出包不做脱敏，包含已保存的凭据、内部地址和数据库加密密钥，请妥善保管。" description="生成后可下载 1 小时，最多保留最近 3 个任务，服务重启后需重新生成。" type="warning" :closable="false" class="export-notice" />
   <el-alert v-if="connectionError" title="暂时无法更新导出状态，正在重试。可点击刷新重新获取。" type="warning" :closable="false" class="export-notice" />
   <el-card shadow="never">
     <template #header><div class="export-heading"><strong>导出任务</strong><el-button text :loading="loading" @click="load()"><UiIcon name="refresh" />刷新</el-button></div></template>
@@ -113,17 +107,12 @@ onUnmounted(() => { disposed = true; if (timer) clearTimeout(timer) })
 </template>
 
 <style scoped>
-.export-contents { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
-.export-contents h3 { margin: 0 0 10px; font-size: 15px; }
-.export-contents p, .export-note { color: var(--secondary); line-height: 1.8; font-size: 13px; }
-.export-contents p { margin: 0; }
-.export-notice { margin-bottom: 12px; }
-.export-note { margin: 10px 0 20px; }
+.export-note { color: var(--secondary); line-height: 1.8; font-size: 13px; }
+.export-notice { margin-bottom: 20px; }
 .export-heading, .export-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .export-time { color: var(--muted); margin-left: 12px; font-size: 12px; }
 .export-job + .export-job { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 24px; }
 .export-filename, .export-hash { overflow-wrap: anywhere; font-size: 12px; }
 .export-hash { display: block; padding-top: 10px; }
 summary { cursor: pointer; font-size: 12px; color: var(--muted); }
-@media (max-width: 900px) { .export-contents { grid-template-columns: 1fr; } }
 </style>

@@ -72,7 +72,7 @@ onMounted(async () => {
 
 <template>
   <div class="page-head">
-    <div><p class="eyebrow">REQUEST ACTIVITY</p><h2>调用日志</h2><p>查看完整请求、响应预览与身份验证详情</p></div>
+    <h2>调用日志</h2>
   </div>
   <div class="toolbar">
     <el-select v-model="filter.apiId" clearable placeholder="全部 API" style="width: 200px">

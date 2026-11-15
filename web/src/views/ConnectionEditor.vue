@@ -114,7 +114,7 @@ async function test() {
           <el-form-item label="UAP 身份服务连接" required>
             <el-select v-model="studio.authConnectionId" placeholder="选择已配置的身份服务" style="width:100%" @change="selectIdentity"><el-option v-for="identity in identities" :key="identity.id" :value="identity.id" :label="identity.name" /></el-select>
           </el-form-item>
-          <el-alert v-if="!identities.length" title="请先在连接管理中新建 UAP 身份服务，并配置 string 类型的工号映射。" type="info" :closable="false" />
+          <el-alert v-if="!identities.length" title="请先在「连接 → 身份服务」中新建 UAP 身份服务，并配置 string 类型的工号映射。" type="info" :closable="false" />
           <el-form-item label="工号映射" required><el-select v-model="studio.staffCodeBinding" placeholder="选择 string 类型的身份字段" style="width:100%"><el-option v-for="binding in staffBindings" :key="binding.name" :value="binding.name" :label="`${binding.name} ← ${binding.path}`" /></el-select></el-form-item>
           <el-form-item label="身份服务标识" required><el-input v-model="studio.identityProvider" placeholder="uap，与 Studio 端配置一致" maxlength="64" /></el-form-item>
           <el-form-item label="启用反馈入口"><el-switch v-model="studio.enabled" /><span class="muted" style="margin-left:12px">同一时间只启用一个 Studio 连接；保存后立即生效。</span></el-form-item>

@@ -70,10 +70,10 @@ async function revoke(key: Key) {
 
 <template>
   <div class="page-head">
-    <div><p class="eyebrow">ACCESS KEYS</p><h2>调用密钥</h2><p>每个 Key 只能调用已授权的接口；调用时在请求头 X-API-Key 中携带，建议每个调用方单独创建</p></div>
+    <div><h2>调用密钥</h2><p>调用方在请求头 X-API-Key 中携带 Key，每个 Key 只能调用已授权的接口</p></div>
     <el-button type="primary" :disabled="loading" @click="openEditor()">创建 Key</el-button>
   </div>
-  <el-alert v-if="keys.some(key => !key.apiIds.length)" title="存在未授权的 Key，当前无法调用任何 API Key 接口。请点击「编辑授权」选择允许访问的接口。" type="warning" :closable="false" class="key-notice" />
+  <el-alert v-if="keys.some(key => !key.apiIds.length)" title="有 Key 尚未授权任何接口，点击「编辑授权」选择允许访问的接口。" type="warning" :closable="false" class="key-notice" />
   <el-card v-loading="loading" shadow="never">
     <el-table :data="keys" empty-text="尚未创建调用密钥；使用外部身份验证的接口无需创建 API Key">
       <el-table-column prop="name" label="名称" min-width="140" />

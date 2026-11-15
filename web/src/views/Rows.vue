@@ -173,8 +173,8 @@ onMounted(loadApis)
 
 <template>
   <div class="page-head">
-    <div><p class="eyebrow">DATA WORKSPACE</p><h2>数据维护</h2><p>定时同步的数据可以拖动调整顺序；手工维护的数据可以增删改</p></div>
-    <div>
+    <h2>数据维护</h2>
+    <div class="page-actions">
       <el-button v-if="api?.mode === 'SNAPSHOT'" @click="sync">立即同步</el-button>
       <el-button v-if="api?.mode === 'MANUAL'" type="primary" @click="edit()">新增记录</el-button>
     </div>
@@ -200,7 +200,7 @@ onMounted(loadApis)
     <span class="muted">点击位次可直接指定目标位置</span>
   </div>
   <el-card shadow="never">
-    <el-empty v-if="!api" description="请先创建定时同步或手工维护的 API" />
+    <el-empty v-if="!api" :description="apis.length ? '请在上方选择要维护的接口' : '还没有「定时同步」或「手工维护」的接口'" />
     <el-table v-else :data="rows" stripe row-key="key">
       <el-table-column v-if="api.mode === 'SNAPSHOT'" label="排序" width="150" fixed="left">
         <template #default="{ row }">
