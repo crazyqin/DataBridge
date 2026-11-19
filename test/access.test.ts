@@ -168,7 +168,7 @@ test('v1.6.1 upgrade preserves existing external access and requires an initial 
       enabled: true, fields: [{ name: 'n', type: 'integer' }], accessPolicy: { enabled: false } }
     const api = f.apis.save(undefined, base)
     assert.throws(() => f.apis.save(undefined, { ...base, code: 'new', path: '/open/new', accessPolicy: policy() }), /先成功同步/)
-    f.db.exec('ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; PRAGMA user_version = 10;')
+    f.db.exec('ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; DROP TABLE api_row_filter; ALTER TABLE api DROP COLUMN row_generation; ALTER TABLE api DROP COLUMN row_filters; PRAGMA user_version = 10;')
     const reopened = openDb(f.config.dbFile)
     try {
       const apis = new Apis(reopened, f.sources, f.config)

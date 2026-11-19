@@ -5,7 +5,7 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import type { Api, Apis } from './apis.ts'
+import type { Api, Apis, Row } from './apis.ts'
 import { userAgentAllowed } from './apis.ts'
 import { Exports } from './exports.ts'
 import type { Auth } from './auth.ts'
@@ -21,7 +21,9 @@ import { ExternalAuth, TEST_CREDENTIAL_HEADER, validateExternalAuth } from './ex
 import type { ExternalAuthTrace } from './auth-diagnostics.ts'
 import { Xingchen } from './xingchen.ts'
 import { DataSkill } from './dataskill.ts'
-import { callDiagnostics } from './request-diagnostics.ts'
+import { callDiagnostics, dataPreview } from './request-diagnostics.ts'
+import { pause } from './row-store.ts'
+import type { OpenResult } from './row-worker.ts'
 import { validatePolicy, type AccessDecision } from './access.ts'
 
 type Env = { Variables: { requestId: string; user: string; externalAuthTrace: ExternalAuthTrace | undefined;
@@ -37,6 +39,26 @@ function send(c: Ctx, data: unknown, status = 200, forBrowser = false) {
   const text = forBrowser ? stringifyForBrowser(data) : stringify(data)
   c.get('callDiagnostic')?.captureResponseBody(text)
   return c.body(text, status as 200, { 'Content-Type': 'application/json; charset=utf-8' })
+}
+
+/**
+ * A successful open call, {code, message, data, meta}, from the data array's JSON chunks (rows separated by commas).
+ * The call log keeps a preview made from the first rows only.
+ */
+function sendRows(c: Ctx, chunks: Uint8Array[], preview: Json[], meta: JsonObject) {
+  const body = Buffer.concat([Buffer.from('{"code":0,"message":"success","data":['), ...chunks, Buffer.from(`],"meta":${stringify(meta)}}`)])
+  c.get('callDiagnostic')?.captureResponsePreview(dataPreview(preview, meta), body.length)
+  return c.body(body, 200, { 'Content-Type': 'application/json; charset=utf-8' })
+}
+
+/** Serialises query rows in slices, so that a large result does not hold up other requests. */
+async function rowChunks(rows: Row[]): Promise<Uint8Array[]> {
+  const chunks: Uint8Array[] = []
+  for (let start = 0; start < rows.length; start += 5000) {
+    if (start) await pause()
+    chunks.push(Buffer.from((start ? ',' : '') + stringify(rows.slice(start, start + 5000)).slice(1, -1)))
+  }
+  return chunks
 }
 
 async function readJson(c: Ctx): Promise<JsonObject> {
@@ -296,11 +318,11 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
 
   // ---- stored rows ----
 
-  app.get('/admin/apis/:id/rows', c => {
+  app.get('/admin/apis/:id/rows', async c => {
     const query = { page: Number(c.req.query('page') ?? 1), pageSize: Number(c.req.query('pageSize') ?? 50) }
     const page = integer(query, 'page', '页码', 1, 1_000_000)
     const pageSize = integer(query, 'pageSize', '每页条数', 1, 200)
-    return admin(c, apis.rows(id(c.req.param('id')), page, pageSize, c.req.query('search') ?? ''))
+    return admin(c, await apis.rows(id(c.req.param('id')), page, pageSize, c.req.query('search') ?? ''))
   })
   app.post('/admin/apis/:id/rows', async c => admin(c, apis.createRow(id(c.req.param('id')), await readJson(c)), 201))
   app.put('/admin/apis/:id/rows/:key', async c => {
@@ -434,10 +456,14 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
       diagnostic.parameters(paging.input, paging.page, paging.pageSize)
       if (api.mode === 'REALTIME' && activeQueries >= config.maxConcurrentQueries) throw new HttpError(503, '服务繁忙，请稍后再试')
       activeQueries++
-      let rows
+      let rows: Row[] | undefined
+      let stored: OpenResult | undefined
       let total: number | undefined
       try {
-        if (paging.page !== undefined && paging.pageSize !== undefined) {
+        if (api.mode !== 'REALTIME') {
+          stored = await apis.queryStored(api, paging.input, identity, paging.page, paging.pageSize)
+          total = stored.total
+        } else if (paging.page !== undefined && paging.pageSize !== undefined) {
           const result = await apis.queryPage(api, paging.input, paging.page, paging.pageSize, identity)
           rows = result.rows
           total = result.total
@@ -447,7 +473,7 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
       } finally {
         activeQueries--
       }
-      count = rows.length
+      count = stored ? stored.count : rows!.length
       const meta: Record<string, Json> = { count, source: api.mode, request_id: requestId }
       if (api.mode === 'SNAPSHOT') meta.last_sync_time = api.syncAt
       if (total !== undefined) {
@@ -458,7 +484,7 @@ export function createApp({ config, db, auth, sources, apis, logs, exports = new
         meta.has_more = paging.page! * paging.pageSize! < total
       }
       diagnostic.stage('response')
-      return send(c, { code: 0, message: 'success', data: rows, meta })
+      return stored ? sendRows(c, stored.chunks, stored.preview.map(row => parse(row)), meta) : sendRows(c, await rowChunks(rows!), rows!, meta)
     } catch (e) {
       error = e instanceof HttpError ? e.message : '服务器内部错误'
       throw e

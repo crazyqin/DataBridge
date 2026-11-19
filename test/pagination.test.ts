@@ -23,6 +23,7 @@ test('existing row databases gain an empty remark without losing records', () =>
       CREATE TABLE api_row (api_id INTEGER, row_key TEXT, data TEXT, position INTEGER,
       sort INTEGER, version INTEGER DEFAULT 1, updated_at TEXT);
       CREATE TABLE request_log (id INTEGER PRIMARY KEY); PRAGMA user_version = 1;`)
+    old.prepare("INSERT INTO api (id, name, auth) VALUES (1, 'old', 'PUBLIC')").run()
     old.prepare('INSERT INTO api_row (api_id, row_key, data, position, updated_at) VALUES (?, ?, ?, ?, ?)')
       .run(1, 'old', '{"name":"kept"}', 0, '2026-01-01')
   } finally {

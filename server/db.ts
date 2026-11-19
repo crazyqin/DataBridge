@@ -166,6 +166,38 @@ const MIGRATIONS = [
     trigger TEXT NOT NULL, status TEXT NOT NULL, summary TEXT, error TEXT, candidate TEXT,
     config_version INTEGER NOT NULL, source_version INTEGER NOT NULL, baseline_version INTEGER NOT NULL
   );`,
+  // Stored rows are kept per generation: a sync writes a new generation in short transactions and then
+  // switches api.row_generation to it. api_row_filter holds each filter field's comparison key per row.
+  `CREATE TABLE api_row_generation (
+    api_id INTEGER NOT NULL REFERENCES api(id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL DEFAULT 0,
+    row_key TEXT NOT NULL,
+    data TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    sort INTEGER,
+    version INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    remark TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (api_id, generation, row_key)
+  );
+  -- Rows of a missing API cannot be read and would fail the new foreign key. Copied in key order, so the new
+  -- primary key is filled sequentially (about twice as fast for large tables).
+  INSERT INTO api_row_generation (api_id, row_key, data, position, sort, version, updated_at, remark)
+    SELECT api_id, row_key, data, position, sort, version, updated_at, remark FROM api_row WHERE api_id IN (SELECT id FROM api)
+    ORDER BY api_id, row_key;
+  DROP TABLE api_row;
+  ALTER TABLE api_row_generation RENAME TO api_row;
+  CREATE INDEX api_row_order ON api_row (api_id, generation, sort IS NULL, sort, position);
+  CREATE TABLE api_row_filter (
+    api_id INTEGER NOT NULL REFERENCES api(id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    row_key TEXT NOT NULL,
+    PRIMARY KEY (api_id, generation, name, value, row_key)
+  ) WITHOUT ROWID;
+  ALTER TABLE api ADD COLUMN row_generation INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE api ADD COLUMN row_filters TEXT;`,
 ]
 
 export type Db = DatabaseSync

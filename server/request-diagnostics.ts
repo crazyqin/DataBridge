@@ -1,8 +1,8 @@
 import type { Api } from './apis.ts'
 import type { AccessDecision } from './access.ts'
 import { STATUS_CODES } from 'node:http'
-import { diagnosticPreview, maskCredential, plainDiagnostics } from './auth-diagnostics.ts'
-import { parse, stringify, type JsonObject } from './json.ts'
+import { AUTH_PREVIEW_BYTES, diagnosticPreview, maskCredential, plainDiagnostics } from './auth-diagnostics.ts'
+import { parse, stringify, type Json, type JsonObject } from './json.ts'
 
 export type CallStage = 'request' | 'routing' | 'access' | 'identity' | 'authorization' | 'query' | 'forward' | 'response' | 'stream'
 export interface CallStreamSummary { bytes: number; events: number; lastEvent: string | null }
@@ -41,6 +41,22 @@ export interface CallRequestTrace {
   stream?: CallStreamSummary
 }
 
+/**
+ * The formatted preview of a {code, message, data, meta} response, without formatting the whole response:
+ * once the compact JSON of the rows shown reaches the preview size, the formatted text up to the limit is
+ * the same as for all rows.
+ */
+export function dataPreview(rows: Json[], meta: Json): { text: string; truncated: boolean } {
+  const shown: Json[] = []
+  let size = 0
+  for (const row of rows) {
+    if (size >= AUTH_PREVIEW_BYTES) break
+    shown.push(row)
+    size += JSON.stringify(row).length
+  }
+  return diagnosticPreview(JSON.stringify({ code: 0, message: 'success', data: shown, meta }, null, 2))
+}
+
 const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'x-api-key']
 const UNMATCHED_NOTE = '未匹配到启用的接口，不记录请求内容'
 
@@ -77,6 +93,11 @@ export function callDiagnostics(request: Request, api?: Api, clientAddress = 'un
     steps: [], errorStage: null, responseBody: null, responseBodyTruncated: false, responseBodyNote: '未记录响应正文',
   }
   let stage: CallStage = 'request', stageStarted = performance.now(), finished = false
+  /** For large responses whose preview was made without formatting the whole body (see dataPreview). */
+  const captureResponsePreview = (preview: { text: string; truncated: boolean }, bytes: number) => {
+    trace.responseBody = preview.text; trace.responseBodyTruncated = preview.truncated
+    trace.responseBodyNote = null; trace.responseBytes = bytes
+  }
   return {
     trace,
     error: (message: string) => message.slice(0, 2000),
@@ -103,10 +124,9 @@ export function callDiagnostics(request: Request, api?: Api, clientAddress = 'un
       trace.pagination = page !== undefined && pageSize !== undefined ? { page, pageSize } : null
     },
     captureResponseBody(raw: string) {
-      const preview = plainDiagnostics.body(raw)
-      trace.responseBody = preview.text; trace.responseBodyTruncated = preview.truncated
-      trace.responseBodyNote = null; trace.responseBytes = Buffer.byteLength(raw)
+      captureResponsePreview(plainDiagnostics.body(raw), Buffer.byteLength(raw))
     },
+    captureResponsePreview,
     captureResponse(response: Response) {
       trace.status = response.status; trace.statusText = response.statusText || STATUS_CODES[response.status] || ''
       trace.responseType = response.headers.get('content-type')

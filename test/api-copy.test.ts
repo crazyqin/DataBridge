@@ -37,7 +37,7 @@ test('copy creates an independent disabled API and preserves the original and it
     assert.deepEqual(copy.fields, original.fields)
     assert.deepEqual(copy.filters, original.filters)
     assert.equal(copy.maxRows, original.maxRows)
-    assert.equal(f.apis.rows(copy.id, 1, 50).total, 0)
+    assert.equal((await f.apis.rows(copy.id, 1, 50)).total, 0)
     assert.equal(f.logs.list({ apiId: String(copy.id) }).items.length, 0)
     assert.equal(f.apis.findOpen(copy.path, copy.method), undefined)
     const renamed = f.apis.save(copy.id, { ...manual, name: copy.name, path: copy.path, code: 'custom_copy_code', enabled: false, version: copy.version })
@@ -45,10 +45,10 @@ test('copy creates an independent disabled API and preserves the original and it
     assert.equal(renamed.path, copy.path)
     assert.throws(() => f.apis.save(copy.id, { ...manual, path: copy.path, code: original.code, enabled: false, version: renamed.version }), /接口编码已存在/)
     f.apis.createRow(copy.id, { id: 'copy-row' })
-    assert.deepEqual(f.apis.rows(original.id, 1, 50).items[0].data, { id: 'original-row' })
+    assert.deepEqual((await f.apis.rows(original.id, 1, 50)).items[0].data, { id: 'original-row' })
     assert.deepEqual(f.apis.get(original.id), original)
     f.apis.remove(copy.id)
-    assert.equal(f.apis.rows(original.id, 1, 50).total, 1)
+    assert.equal((await f.apis.rows(original.id, 1, 50)).total, 1)
   } finally { await f.close() }
 })
 
@@ -92,9 +92,9 @@ test('SQL and snapshot copies preserve configuration, reset synchronization stat
       assert.equal(copy.syncAt, null); assert.equal(copy.syncStatus, null); assert.equal(copy.syncCount, null); assert.equal(copy.syncError, null)
       if (mode === 'SNAPSHOT') {
         assert.equal(copy.nextSyncAt, null)
-        assert.equal(f.apis.rows(copy.id, 1, 50).total, 0)
+        assert.equal((await f.apis.rows(copy.id, 1, 50)).total, 0)
         assert.equal(f.apis.syncHistory(copy.id).items.length, 0)
-        assert.equal(f.apis.rows(original.id, 1, 50).total, 1)
+        assert.equal((await f.apis.rows(original.id, 1, 50)).total, 1)
       }
     }
   } finally { await f.close() }

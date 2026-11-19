@@ -43,7 +43,7 @@ test('projects share APIs, preserve business data, copy membership and only remo
     const copy = f.apis.copy(api.id)
     assert.deepEqual(copy.projectIds, api.projectIds)
     assert.equal(copy.enabled, false)
-    assert.equal(f.apis.rows(copy.id, 1, 10).total, 0)
+    assert.equal((await f.apis.rows(copy.id, 1, 10)).total, 0)
     assert.equal(f.apis.projects.get(a.id).apiCount, 2)
     f.apis.projects.changeMembers(a.id, { apiIds: [api.id], operation: 'remove' })
     assert.deepEqual(f.apis.get(api.id).projectIds, [b.id])
@@ -54,7 +54,7 @@ test('projects share APIs, preserve business data, copy membership and only remo
     assert.equal(current.version, api.version)
     assert.equal(current.enabled, true)
     assert.equal(current.path, api.path)
-    assert.deepEqual(f.apis.rows(api.id, 1, 10).items[0].data, { id: 'kept-row' })
+    assert.deepEqual((await f.apis.rows(api.id, 1, 10)).items[0].data, { id: 'kept-row' })
     assert.equal(f.logs.list({}).items.length, 1)
     assert.equal((await f.app.request('/open/shared')).status, 200)
     f.apis.remove(copy.id)
@@ -158,7 +158,7 @@ test('v1.2.8 databases upgrade with ungrouped APIs and retain rows and open rout
     const original = f.apis.save(undefined, definition)
     f.apis.createRow(original.id, { id: 'legacy-row' })
     f.db.exec(`DROP TRIGGER api_key_access_delete; DROP TRIGGER api_key_access_auth; DROP TABLE api_key_access;
-      DROP TABLE api_project; DROP TABLE project; ALTER TABLE api DROP COLUMN project_version; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; PRAGMA user_version = 8;`)
+      DROP TABLE api_project; DROP TABLE project; ALTER TABLE api DROP COLUMN project_version; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; DROP TABLE api_row_filter; ALTER TABLE api DROP COLUMN row_generation; ALTER TABLE api DROP COLUMN row_filters; PRAGMA user_version = 8;`)
     const upgraded = openDb(f.config.dbFile)
     try {
       const apis = new Apis(upgraded, f.sources, f.config)
@@ -167,7 +167,7 @@ test('v1.2.8 databases upgrade with ungrouped APIs and retain rows and open rout
       assert.equal(api.projectVersion, 1)
       assert.equal(api.version, original.version)
       assert.equal(apis.findOpen(api.path, api.method)!.id, api.id)
-      assert.deepEqual(apis.rows(api.id, 1, 10).items[0].data, { id: 'legacy-row' })
+      assert.deepEqual((await apis.rows(api.id, 1, 10)).items[0].data, { id: 'legacy-row' })
       assert.deepEqual(apis.projects.list(), [])
     } finally { upgraded.close() }
   } finally { await f.close() }

@@ -251,7 +251,7 @@ test('v1.1 databases migrate atomically, deduplicate shared settings and preserv
       ALTER TABLE api DROP COLUMN auth_connection_id; ALTER TABLE api DROP COLUMN xingchen_connection_id;
       DROP TABLE request_detail_log; ALTER TABLE request_log DROP COLUMN method;
       ALTER TABLE request_log DROP COLUMN path; ALTER TABLE request_log DROP COLUMN status;
-      DROP TABLE connection; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; PRAGMA user_version = 6;`)
+      DROP TABLE connection; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; DROP TABLE api_row_filter; ALTER TABLE api DROP COLUMN row_generation; ALTER TABLE api DROP COLUMN row_filters; PRAGMA user_version = 6;`)
     await sources.closeAll(); db.close()
     db = openDb(config.dbFile); sources = new Sources(db, config); apis = new Apis(db, sources, config)
     assert.equal(apis.connections.list().length, 2)

@@ -86,14 +86,18 @@ async function main() {
     const schema = tables.map(table => ({ ...table, columns: db.prepare(`PRAGMA table_info(${quote(table.name)})`).all(),
       foreignKeys: db.prepare(`PRAGMA foreign_key_list(${quote(table.name)})`).all() }))
     await write('schema.json', JSON.stringify(schema, null, 2) + '\n')
-    for (const table of tables) {
+    for (const table of schema) {
       if (!/^[a-z_]+$/.test(table.name)) throw new Error('Unexpected table name')
       progress('tables', `正在导出 ${table.name}`)
-      counts[table.name] = await writeRows(`tables/${table.name}.jsonl`, rows(db, `SELECT * FROM ${quote(table.name)} ORDER BY rowid`))
+      // WITHOUT ROWID tables (the filter index) are ordered by their primary key instead.
+      const primaryKey = (table.columns as { name: string; pk: number }[]).filter(column => column.pk > 0)
+        .sort((a, b) => a.pk - b.pk).map(column => quote(column.name)).join(', ')
+      const order = /\bWITHOUT\s+ROWID\b/i.test(table.sql) ? primaryKey : 'rowid'
+      counts[table.name] = await writeRows(`tables/${table.name}.jsonl`, rows(db, `SELECT * FROM ${quote(table.name)} ORDER BY ${order}`))
     }
     progress('configuration', '正在导出可读配置与业务数据')
-    function* decoded(table: string, jsonFields: string[], encryptedFields: string[]) {
-      for (const row of rows(db, `SELECT * FROM ${quote(table)} ORDER BY rowid`)) {
+    function* decoded(table: string, jsonFields: string[], encryptedFields: string[], sql = `SELECT * FROM ${quote(table)} ORDER BY rowid`) {
+      for (const row of rows(db, sql)) {
         for (const field of encryptedFields) if (typeof row[field] === 'string') row[field] = decrypt(secretKey, row[field])
         for (const field of jsonFields) if (typeof row[field] === 'string') row[field] = parse(row[field])
         yield row
@@ -105,7 +109,9 @@ async function main() {
     await writeRows('configuration/directory.jsonl', decoded('staff_directory', ['config'], ['config']))
     await writeRows('analysis/staff_members.jsonl', decoded('staff_member', ['data'], []))
     await writeRows('analysis/directory_sync.jsonl', decoded('directory_sync', ['summary', 'candidate'], []))
-    await writeRows('analysis/api_rows.jsonl', decoded('api_row', ['data'], []))
+    // Only the rows calls currently read; tables/api_row.jsonl also holds generations a sync was writing or removing.
+    await writeRows('analysis/api_rows.jsonl', decoded('api_row', ['data'], [], `SELECT r.* FROM api_row r
+      JOIN api a ON a.id = r.api_id AND a.row_generation = r.generation ORDER BY r.rowid`))
     progress('analysis', '正在整理全部调用日志与统计')
     function* requests() {
       for (const row of rows(db, `SELECT l.*, a.name AS api_name_current, d.detail AS request, e.detail AS external_auth
@@ -146,7 +152,7 @@ async function main() {
       '- tables/*.jsonl：所有业务表逐行导出，字段名与原数据库一致；JSON 文本字段保留原始字符串。\n' +
       '- schema.json：各表建表语句、字段类型、主键和外键。\n' +
       '- analysis/requests.jsonl：每次调用摘要、请求响应详情和外部身份验证详情，通过日志 ID 关联；详情缺失时为 null。\n' +
-      '- analysis/api_rows.jsonl：手工和快照业务数据，data 已解析为 JSON 对象。\n' +
+      '- analysis/api_rows.jsonl：当前生效的手工和快照业务数据，data 已解析为 JSON 对象；tables/api_row.jsonl 另含同步中或待清理的数据版本（generation）。\n' +
       '- analysis/*.csv：调用摘要、按接口统计、UTC 每日统计、同步历史；UTF-8 BOM、RFC 4180 引号，保留原始单元格值。\n' +
       '- analysis/summary.json：全部已保存调用的成功/失败数、失败率（0~1）、平均耗时和 P50/P95/P99；耗时单位毫秒，分位数采用 nearest-rank。空样本耗时和失败率为 null。\n' +
       '- manifest.json：软件与导出格式版本、时间、记录数量、每个文件的 SHA-256。\n\n' +

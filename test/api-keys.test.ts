@@ -35,7 +35,7 @@ const legacyKeys = `DROP TRIGGER api_key_access_delete; DROP TRIGGER api_key_acc
   CREATE TABLE legacy_api_key (id INTEGER PRIMARY KEY, name TEXT NOT NULL, prefix TEXT NOT NULL,
     hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, last_used_at TEXT);
   INSERT INTO legacy_api_key SELECT id, name, prefix, hash, created_at, last_used_at FROM api_key;
-  DROP TABLE api_key; ALTER TABLE legacy_api_key RENAME TO api_key; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; PRAGMA user_version = 9;`
+  DROP TABLE api_key; ALTER TABLE legacy_api_key RENAME TO api_key; ALTER TABLE api DROP COLUMN access_policy; DROP TABLE staff_directory; DROP TABLE staff_member; DROP TABLE directory_sync; DROP TABLE api_row_filter; ALTER TABLE api DROP COLUMN row_generation; ALTER TABLE api DROP COLUMN row_filters; PRAGMA user_version = 9;`
 
 test('keys authorize exact APIs and HTTP methods, deny missing grants before querying, and log 403', async () => {
   const f = fixture()
@@ -148,7 +148,7 @@ test('old keys retain their hashes but are denied until explicitly authorized, i
       upgraded.close(); upgraded = openDb(f.config.dbFile); auth = new Auth(upgraded, f.config)
       auth.authorizeKey(key.key, a.id)
       assert.deepEqual(auth.listKeys()[0].apiIds, [a.id])
-      assert.deepEqual(f.apis.rows(a.id, 1, 10).items[0].data, { id: 'legacy-data' })
+      assert.deepEqual((await f.apis.rows(a.id, 1, 10)).items[0].data, { id: 'legacy-data' })
       assert.deepEqual(upgraded.prepare('PRAGMA foreign_key_check').all(), [])
     } finally { upgraded.close() }
   } finally { await f.close() }

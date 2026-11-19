@@ -46,7 +46,7 @@ async function shutdown() {
   await new Promise(resolve => server.close(resolve))
   clearTimeout(grace)
   // Each step runs even if an earlier one fails, so the database is always closed.
-  for (const step of [() => exports.close(), () => sources.closeAll(), () => db.close()]) {
+  for (const step of [() => exports.close(), () => apis.close(), () => sources.closeAll(), () => db.close()]) {
     try {
       await step()
     } catch (error) {

@@ -13,6 +13,9 @@ import { isObject, parse, stringify, type Json, type JsonObject } from './json.t
 import { runQuery, runStatements, SourceError } from './query.ts'
 import type { Sources } from './sources.ts'
 import { parseSql, positional } from './sql.ts'
+import { filterSignature, NULL_KEY, REMARK_FIELD, type RowFilter } from './row-data.ts'
+import { compare, filterKeys, pause, RowStore, sortedOrder, type IndexedApi } from './row-store.ts'
+import type { OpenResult } from './row-worker.ts'
 import { convertOptional, FIELD_TYPES, identity, rowKey, type Field, type FieldType } from './values.ts'
 import { validateXingchen, type XingchenConfig } from './xingchen.ts'
 
@@ -61,11 +64,10 @@ export interface Api {
 
 export type Row = Record<string, Json>
 export interface PageResult { rows: Row[]; total: number; page: number; pageSize: number }
-export const REMARK_FIELD = '__databridge_remark'
-function withRemark(row: Row, remark: string): Row {
-  if (!remark) return row
-  if (Object.hasOwn(row, REMARK_FIELD)) throw new HttpError(422, `数据字段 ${REMARK_FIELD} 与平台备注冲突`)
-  return { ...row, [REMARK_FIELD]: remark }
+
+/** The rows of an open call on stored data, as returned by the row worker. */
+function storedRows(result: OpenResult): Row[] {
+  return parse(`[${Buffer.concat(result.chunks).toString()}]`) as Row[]
 }
 
 interface ApiRow {
@@ -146,6 +148,9 @@ export class Apis {
   readonly projects: Projects
   private readonly jobs = new Map<number, Cron>()
   private readonly syncing = new Set<number>()
+  /** Snapshot filter indexes being rebuilt after a filter change; a sync cancels the rebuild and writes its own. */
+  private readonly rebuilding = new Map<number, { cancelled: boolean; done: Promise<void> }>()
+  private readonly store: RowStore
   private readonly db: Db
   private readonly sources: Sources
   private readonly config: Config
@@ -157,6 +162,7 @@ export class Apis {
     this.connections = new Connections(db, config)
     this.projects = new Projects(db)
     this.directory = new Directory(db, sources, config)
+    this.store = new RowStore(db, config.dbFile)
     this.connections.migrateLegacy()
   }
 
@@ -285,6 +291,7 @@ export class Apis {
     const v = this.validate({ ...input, accessPolicy: input.accessPolicy ?? (id !== undefined
       ? this.get(id).accessPolicy as unknown as Json : { enabled: input.auth === 'EXTERNAL' }) })
     const time = now()
+    let rows: 'cleared' | 'stale' | undefined
     const saved = transaction(this.db, () => {
       if (id !== undefined) {
         if (this.get(id).version !== integer(input, 'version', '版本号', 1, Number.MAX_SAFE_INTEGER)) throw conflict('API 配置已被修改，请刷新后再保存')
@@ -305,7 +312,8 @@ export class Apis {
           params, fields, filters, key_fields, cron, cron_timezone, allow_empty, timeout_seconds, max_rows, enabled, external_auth, xingchen, auth_connection_id, xingchen_connection_id, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(...columns, time, time)
         const apiId = Number(result.lastInsertRowid)
-        this.db.prepare('UPDATE api SET access_policy = ? WHERE id = ?').run(JSON.stringify(v.accessPolicy), apiId)
+        this.db.prepare('UPDATE api SET access_policy = ?, row_filters = ? WHERE id = ?')
+          .run(JSON.stringify(v.accessPolicy), filterSignature(v.fields, v.filters), apiId)
         if (input.projectIds !== undefined) this.projects.assign(apiId, input.projectIds)
         return apiId
       }
@@ -316,23 +324,36 @@ export class Apis {
       this.db.prepare(`UPDATE api SET name = ?, code = ?, path = ?, method = ?, auth = ?, user_agents = ?, mode = ?,
         datasource_id = ?, sql_text = ?, params = ?, fields = ?, filters = ?, key_fields = ?, cron = ?, cron_timezone = ?, allow_empty = ?,
         timeout_seconds = ?, max_rows = ?, enabled = ?, external_auth = ?, xingchen = ?, auth_connection_id = ?, xingchen_connection_id = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(...columns, time, id)
+      const stored: IndexedApi = { id, fields: v.fields, filters: v.filters }
+      const filtersChanged = filterSignature(current.fields, current.filters) !== filterSignature(v.fields, v.filters)
       if (current.mode !== v.mode) {
-        this.db.prepare('DELETE FROM api_row WHERE api_id = ?').run(id)
+        // Stored rows of the old mode are removed in the background.
+        this.store.clear(stored)
         this.db.prepare('UPDATE api SET sync_at = NULL, sync_status = NULL, sync_count = NULL, sync_error = NULL WHERE id = ?').run(id)
-      } else if (v.mode === 'MANUAL' && stringify(current.fields) !== stringify(v.fields)) {
-        this.migrateManualRows(id, v.fields)
+        rows = 'cleared'
+      } else if (v.mode === 'MANUAL') {
+        const fieldsChanged = stringify(current.fields) !== stringify(v.fields)
+        if (fieldsChanged) this.migrateManualRows(id, v.fields)
+        if (fieldsChanged || filtersChanged || !this.store.indexed(stored)) this.store.reindexInPlace(stored)
+      } else if (v.mode === 'SNAPSHOT' && filtersChanged) {
+        this.store.markStale(id)
+        rows = 'stale'
       }
       this.db.prepare('UPDATE api SET access_policy = ? WHERE id = ?').run(JSON.stringify(v.accessPolicy), id)
       return id
     })
     this.schedule(saved)
+    if (rows === 'cleared') this.store.collect(saved)
+    if (rows === 'stale') this.ensureIndex(saved)
     return this.get(saved)
   }
 
   /** Re-validates stored manual rows against changed fields; a row that no longer fits aborts the save. */
   private migrateManualRows(id: number, fields: Field[]) {
-    const rows = this.db.prepare('SELECT row_key, data FROM api_row WHERE api_id = ? ORDER BY position').all(id) as { row_key: string; data: string }[]
-    const update = this.db.prepare('UPDATE api_row SET data = ?, version = version + 1, updated_at = ? WHERE api_id = ? AND row_key = ?')
+    const generation = this.store.generation(id)
+    const rows = this.db.prepare('SELECT row_key, data FROM api_row WHERE api_id = ? AND generation = ? ORDER BY position')
+      .all(id, generation) as { row_key: string; data: string }[]
+    const update = this.db.prepare('UPDATE api_row SET data = ?, version = version + 1, updated_at = ? WHERE api_id = ? AND generation = ? AND row_key = ?')
     rows.forEach((row, index) => {
       let data: string
       try {
@@ -340,7 +361,7 @@ export class Apis {
       } catch (error) {
         throw conflict(`第 ${index + 1} 条记录不符合新的字段定义：${(error as Error).message}`)
       }
-      if (data !== row.data) update.run(data, now(), id, row.row_key)
+      if (data !== row.data) update.run(data, now(), id, generation, row.row_key)
     })
   }
 
@@ -382,12 +403,31 @@ export class Apis {
     for (const { id } of this.db.prepare("SELECT id FROM api WHERE mode = 'SNAPSHOT' AND enabled = 1").all() as { id: number }[]) {
       this.schedule(id)
     }
+    this.prepareRows()
   }
 
   stopSchedules() {
     this.directory.stop()
     for (const job of this.jobs.values()) job.stop()
     this.jobs.clear()
+  }
+
+  /** Stops background row work and the row readers; call after stopSchedules when shutting down. */
+  async close() {
+    for (const job of this.rebuilding.values()) job.cancelled = true
+    await this.store.close()
+  }
+
+  /** After an upgrade or an interrupted sync: builds missing filter indexes and removes unused generations. */
+  private prepareRows() {
+    for (const { id, mode } of this.db.prepare('SELECT id, mode FROM api').all() as { id: number; mode: Mode }[]) {
+      if (mode === 'MANUAL') {
+        const api = this.get(id)
+        if (!this.store.indexed(api)) transaction(this.db, () => this.store.reindexInPlace(api))
+      }
+      if (mode === 'SNAPSHOT') this.ensureIndex(id)
+      this.store.collect(id)
+    }
   }
 
   /** Brings the cron job for one API in line with its stored configuration. */
@@ -407,6 +447,8 @@ export class Apis {
   /**
    * Replaces the snapshot with the current SQL result. A scheduled run passes the configuration
    * version it was created for and is dropped if the API has since changed or been disabled.
+   * The new rows are written as a separate generation in short transactions and switched in at the end,
+   * so calls keep reading the previous snapshot meanwhile and are never held up by a large write.
    */
   async sync(id: number, scheduledVersion?: number): Promise<{ count: number }> {
     if (this.syncing.has(id)) throw conflict('该 API 正在同步，请稍后再试')
@@ -425,32 +467,61 @@ export class Apis {
       const result = await runQuery(pool, positional(parseSql(api.sql!), () => 'text'), [], api)
       if (result.truncated) throw new HttpError(422, `同步结果超过最大行数 ${api.maxRows}，已保留上一次快照`)
       if (!result.rows.length && !api.allowEmpty) throw bad('同步结果为空，已保留上一次快照')
-      const keys = result.rows.map(row => rowKey(row, api!.keyFields))
-      if (new Set(keys).size !== keys.length) throw bad('同步结果中唯一键重复，已保留上一次快照')
       const expected = api
-      transaction(this.db, () => {
-        const current = this.get(id)
-        if (current.version !== expected.version || (scheduledVersion !== undefined && !current.enabled)) {
-          throw conflict('同步期间 API 配置已变更，快照未更新')
+      const rows = result.rows
+      const keys: string[] = []
+      const values: string[][] = expected.filters.map(() => [])
+      for (let start = 0; start < rows.length; start += 1000) {
+        for (const row of rows.slice(start, start + 1000)) {
+          keys.push(rowKey(row, expected.keyFields))
+          filterKeys(expected, row).forEach((value, index) => values[index].push(value))
         }
-        if (this.sources.get(source.id).version !== source.version) throw conflict('同步期间数据源配置已变更，快照未更新')
-        const previous = new Map((this.db.prepare('SELECT row_key, sort, remark, version FROM api_row WHERE api_id = ?')
-          .all(id) as { row_key: string; sort: number | null; remark: string; version: number }[]).map(row => [row.row_key, row]))
-        this.db.prepare('DELETE FROM api_row WHERE api_id = ?').run(id)
-        const insert = this.db.prepare(`INSERT INTO api_row (api_id, row_key, data, position, sort, remark, version, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        const time = now()
-        result.rows.forEach((row, index) => {
-          const old = previous.get(keys[index])
-          if (old?.remark && Object.hasOwn(row, REMARK_FIELD)) throw bad(`数据字段 ${REMARK_FIELD} 与平台备注冲突，已保留上一次快照`)
-          insert.run(id, keys[index], stringify(row), index, old?.sort ?? null, old?.remark ?? '', old?.version ?? 1, time)
-        })
-        this.db.prepare("UPDATE api SET sync_at = ?, sync_status = 'SUCCESS', sync_count = ?, sync_error = NULL WHERE id = ?")
-          .run(time, result.rows.length, id)
-        this.db.prepare("UPDATE sync_log SET status = 'SUCCESS', finished_at = ?, row_count = ? WHERE id = ?")
-          .run(time, result.rows.length, logId)
+        await pause()
+      }
+      const order = await sortedOrder(keys.length, (a, b) => compare(keys[a], keys[b]))
+      for (let k = 1; k < order.length; k++) {
+        if (keys[order[k]] === keys[order[k - 1]]) throw bad('同步结果中唯一键重复，已保留上一次快照')
+      }
+      // An index rebuild for changed filters is superseded: this sync writes the index for the current filters.
+      await this.stopRebuild(id)
+      const previous = this.store.generation(id)
+      const time = now()
+      // Manual order, remark and row version carry over from the row with the same key in the current snapshot.
+      const insert = this.db.prepare(`INSERT INTO api_row (api_id, generation, row_key, data, position, sort, remark, version, updated_at)
+        SELECT ?1, ?2, ?3, ?4, ?5, old.sort, coalesce(old.remark, ''), coalesce(old.version, 1), ?6
+        FROM (SELECT 1) LEFT JOIN api_row old ON old.api_id = ?1 AND old.generation = ?7 AND old.row_key = ?3`)
+      const remark = this.db.prepare('SELECT remark FROM api_row WHERE api_id = ? AND generation = ? AND row_key = ?')
+      // Rows are written in key order (see RowStore.write).
+      const generation = await this.store.write(expected, keys, values, () => {
+        if (this.get(id).version !== expected.version) throw conflict('同步期间 API 配置已变更，快照未更新')
+      }, (generation, start, end) => {
+        for (let k = start; k < end; k++) {
+          const index = order[k]
+          const row = rows[index]
+          if (Object.hasOwn(row, REMARK_FIELD) && (remark.get(id, previous, keys[index]) as { remark: string } | undefined)?.remark) {
+            throw bad(`数据字段 ${REMARK_FIELD} 与平台备注冲突，已保留上一次快照`)
+          }
+          insert.run(id, generation, keys[index], stringify(row), index, time, previous)
+        }
       })
-      return { count: result.rows.length }
+      try {
+        transaction(this.db, () => {
+          const current = this.get(id)
+          if (current.version !== expected.version || (scheduledVersion !== undefined && !current.enabled)) {
+            throw conflict('同步期间 API 配置已变更，快照未更新')
+          }
+          if (this.sources.get(source.id).version !== source.version) throw conflict('同步期间数据源配置已变更，快照未更新')
+          this.store.switchTo(expected, generation)
+          const finished = now()
+          this.db.prepare("UPDATE api SET sync_at = ?, sync_status = 'SUCCESS', sync_count = ?, sync_error = NULL WHERE id = ?")
+            .run(finished, rows.length, id)
+          this.db.prepare("UPDATE sync_log SET status = 'SUCCESS', finished_at = ?, row_count = ? WHERE id = ?")
+            .run(finished, rows.length, logId)
+        })
+      } finally {
+        this.store.finish(id)
+      }
+      return { count: rows.length }
     } catch (error) {
       if (api?.mode === 'SNAPSHOT') {
         const message = error instanceof SourceError ? `${error.message}：${error.detail}` : (error as Error).message
@@ -463,40 +534,91 @@ export class Apis {
       throw error
     } finally {
       this.syncing.delete(id)
+      // A filter change during the sync left the index stale.
+      this.ensureIndex(id)
     }
+  }
+
+  /** Starts a background rebuild when a snapshot's filter index does not match its filter configuration. */
+  private ensureIndex(id: number) {
+    if (this.syncing.has(id) || this.rebuilding.has(id) || this.store.closed || !this.db.isOpen) return
+    const api = this.db.prepare('SELECT * FROM api WHERE id = ?').get(id) as ApiRow | undefined
+    if (!api || api.mode !== 'SNAPSHOT') return
+    const target: IndexedApi = { id, fields: JSON.parse(api.fields), filters: JSON.parse(api.filters) }
+    if (this.store.indexed(target)) return
+    const job = { cancelled: false, done: Promise.resolve() }
+    this.rebuilding.set(id, job)
+    job.done = this.rebuildIndex(target, job).then(() => {
+      this.rebuilding.delete(id)
+      this.ensureIndex(id) // the filters may have changed again meanwhile
+    }, error => {
+      // Not retried here; the next save, sync or restart tries again. Calls compare every row until then.
+      this.rebuilding.delete(id)
+      if (!(error instanceof HttpError) && this.db.isOpen) console.error(`Rebuilding the filter index of API ${id} failed:`, error)
+    })
+  }
+
+  /** Copies the current snapshot into a new generation with keys for the configured filters, then switches to it. */
+  private async rebuildIndex(target: IndexedApi, job: { cancelled: boolean }) {
+    const id = target.id
+    const signature = filterSignature(target.fields, target.filters)
+    const previous = this.store.generation(id)
+    const cancelled = () => {
+      if (job.cancelled || this.store.closed) throw conflict('索引重建已取消')
+    }
+    // Row keys in key order with their filter keys, read a chunk at a time.
+    const keys: string[] = []
+    const values: string[][] = target.filters.map(() => [])
+    const read = this.db.prepare(`SELECT row_key, data FROM api_row WHERE api_id = ? AND generation = ? AND row_key > ?
+      ORDER BY row_key LIMIT 1000`)
+    for (;;) {
+      cancelled()
+      const rows = read.all(id, previous, keys.at(-1) ?? '') as { row_key: string; data: string }[]
+      for (const row of rows) {
+        keys.push(row.row_key)
+        filterKeys(target, parse(row.data) as JsonObject).forEach((value, index) => values[index].push(value))
+      }
+      if (rows.length < 1000) break
+      await pause()
+    }
+    const copy = this.db.prepare(`INSERT INTO api_row (api_id, generation, row_key, data, position, sort, remark, version, updated_at)
+      SELECT api_id, ?, row_key, data, position, sort, remark, version, updated_at FROM api_row
+      WHERE api_id = ? AND generation = ? AND row_key > ? ORDER BY row_key LIMIT ?`)
+    // keys is in the database's key order, so each chunk continues after the last key of the one before.
+    const generation = await this.store.write(target, keys, values, cancelled,
+      (generation, start, end) => copy.run(generation, id, previous, start ? keys[start - 1] : '', end - start))
+    try {
+      transaction(this.db, () => {
+        const current = this.db.prepare('SELECT mode, fields, filters FROM api WHERE id = ?').get(id) as Pick<ApiRow, 'mode' | 'fields' | 'filters'> | undefined
+        if (current?.mode === 'SNAPSHOT' && this.store.generation(id) === previous
+          && filterSignature(JSON.parse(current.fields), JSON.parse(current.filters)) === signature) this.store.switchTo(target, generation)
+      })
+    } finally {
+      this.store.finish(id)
+    }
+  }
+
+  private async stopRebuild(id: number) {
+    const job = this.rebuilding.get(id)
+    if (!job) return
+    job.cancelled = true
+    await job.done
+  }
+
+  /** Remarks and manual order are copied into the generation being written, so they cannot change meanwhile. */
+  private assertIdle(id: number) {
+    if (this.store.writing(id) || this.rebuilding.has(id)) throw conflict('数据正在同步或整理，请稍后再试')
   }
 
   // ---- stored rows ----
 
-  rows(id: number, page: number, pageSize: number, search = '') {
+  async rows(id: number, page: number, pageSize: number, search = '') {
     const api = this.get(id)
     if (api.mode === 'REALTIME' || api.mode === 'XINGCHEN') throw bad('当前模式没有本地数据')
     const query = search.trim()
     if (query.length > 200) throw bad('搜索内容不能超过 200 个字符')
-    const offset = (page - 1) * pageSize
-    if (!query) {
-      const { total } = this.db.prepare('SELECT count(*) AS total FROM api_row WHERE api_id = ?').get(id) as { total: number }
-      const items = (this.db.prepare(`SELECT row_key, data, remark, version, sort FROM api_row WHERE api_id = ?
-        ORDER BY sort IS NULL, sort, position LIMIT ? OFFSET ?`).all(id, pageSize, offset) as
-        { row_key: string; data: string; remark: string; version: number; sort: number | null }[])
-        .map((row, index) => ({ key: row.row_key, version: row.version, sorted: row.sort !== null,
-          position: offset + index + 1, remark: row.remark, data: parse(row.data) }))
-      return { items, total, allTotal: total, page, pageSize }
-    }
-    const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`
-    const sql = `WITH ordered AS (
-      SELECT row_key, data, remark, version, sort, row_number() OVER (ORDER BY sort IS NULL, sort, position) AS position
-      FROM api_row WHERE api_id = ?
-    ) SELECT * FROM ordered WHERE EXISTS (SELECT 1 FROM json_each(ordered.data)
-      WHERE CAST(value AS TEXT) LIKE ? ESCAPE '\\') OR remark LIKE ? ESCAPE '\\'`
-    const args = [id, pattern, pattern]
-    const { total } = this.db.prepare(`SELECT count(*) AS total FROM (${sql})`).get(...args) as { total: number }
-    const items = (this.db.prepare(`${sql} ORDER BY position LIMIT ? OFFSET ?`).all(...args, pageSize, offset) as
-      { row_key: string; data: string; remark: string; version: number; sort: number | null; position: number }[])
-      .map(row => ({ key: row.row_key, version: row.version, sorted: row.sort !== null,
-        position: row.position, remark: row.remark, data: parse(row.data) }))
-    const allTotal = (this.db.prepare('SELECT count(*) AS total FROM api_row WHERE api_id = ?').get(id) as { total: number }).total
-    return { items, total, allTotal, page, pageSize }
+    const { items, total, allTotal } = await this.store.list({ apiId: id, page, pageSize, search: query })
+    return { items: items.map(item => ({ ...item, data: parse(item.data) })), total, allTotal, page, pageSize }
   }
 
   private normalizeManual(fields: Field[], input: JsonObject, rejectUnknown: boolean): Row {
@@ -519,35 +641,47 @@ export class Apis {
 
   createRow(id: number, input: JsonObject) {
     return transaction(this.db, () => {
-      const data = this.normalizeManual(this.manualApi(id).fields, input, true)
+      const api = this.manualApi(id)
+      const data = this.normalizeManual(api.fields, input, true)
       const key = randomUUID()
-      this.db.prepare(`INSERT INTO api_row (api_id, row_key, data, position, updated_at)
-        VALUES (?, ?, ?, (SELECT coalesce(max(position), -1) + 1 FROM api_row WHERE api_id = ?), ?)`).run(id, key, stringify(data), id, now())
+      const generation = this.store.generation(id)
+      this.db.prepare(`INSERT INTO api_row (api_id, generation, row_key, data, position, updated_at)
+        VALUES (?1, ?2, ?3, ?4, (SELECT coalesce(max(position), -1) + 1 FROM api_row WHERE api_id = ?1 AND generation = ?2), ?5)`)
+        .run(id, generation, key, stringify(data), now())
+      this.store.index(api, generation, key, data)
       return { key, version: 1, data }
     })
   }
 
   updateRow(id: number, key: string, version: number, input: JsonObject) {
     return transaction(this.db, () => {
-      const data = this.normalizeManual(this.manualApi(id).fields, input, true)
-      const changed = this.db.prepare('UPDATE api_row SET data = ?, version = version + 1, updated_at = ? WHERE api_id = ? AND row_key = ? AND version = ?')
-        .run(stringify(data), now(), id, key, version)
+      const api = this.manualApi(id)
+      const data = this.normalizeManual(api.fields, input, true)
+      const generation = this.store.generation(id)
+      const changed = this.db.prepare(`UPDATE api_row SET data = ?, version = version + 1, updated_at = ?
+        WHERE api_id = ? AND generation = ? AND row_key = ? AND version = ?`).run(stringify(data), now(), id, generation, key, version)
       if (changed.changes === 0) this.rowConflict(id, key)
+      this.store.unindex(api, generation, key)
+      this.store.index(api, generation, key, data)
       return { key, version: version + 1, data }
     })
   }
 
   deleteRow(id: number, key: string, version: number) {
     transaction(this.db, () => {
-      this.manualApi(id)
-      if (this.db.prepare('DELETE FROM api_row WHERE api_id = ? AND row_key = ? AND version = ?').run(id, key, version).changes === 0) {
+      const api = this.manualApi(id)
+      const generation = this.store.generation(id)
+      if (this.db.prepare('DELETE FROM api_row WHERE api_id = ? AND generation = ? AND row_key = ? AND version = ?')
+        .run(id, generation, key, version).changes === 0) {
         this.rowConflict(id, key)
       }
+      this.store.unindex(api, generation, key)
     })
   }
 
   private rowConflict(id: number, key: string): never {
-    if (!this.db.prepare('SELECT 1 FROM api_row WHERE api_id = ? AND row_key = ?').get(id, key)) throw notFound('记录不存在')
+    if (!this.db.prepare('SELECT 1 FROM api_row WHERE api_id = ? AND generation = ? AND row_key = ?')
+      .get(id, this.store.generation(id), key)) throw notFound('记录不存在')
     throw conflict('记录已被修改，请刷新后再操作')
   }
 
@@ -555,12 +689,15 @@ export class Apis {
     const api = this.get(id)
     if (api.mode === 'REALTIME' || api.mode === 'XINGCHEN') throw bad('当前模式没有本地数据')
     if (typeof remark !== 'string' || remark.length > 2000) throw bad('备注必须是 2000 个字符以内的文本')
+    this.assertIdle(id)
     const value = remark.trim()
-    const existing = this.db.prepare('SELECT data FROM api_row WHERE api_id = ? AND row_key = ?').get(id, key) as { data: string } | undefined
+    const generation = this.store.generation(id)
+    const existing = this.db.prepare('SELECT data FROM api_row WHERE api_id = ? AND generation = ? AND row_key = ?')
+      .get(id, generation, key) as { data: string } | undefined
     if (!existing) throw notFound('记录不存在')
     if (value && Object.hasOwn(parse(existing.data) as Row, REMARK_FIELD)) throw bad(`数据字段 ${REMARK_FIELD} 与平台备注冲突`)
     const changed = this.db.prepare(`UPDATE api_row SET remark = ?, version = version + 1, updated_at = ?
-      WHERE api_id = ? AND row_key = ? AND version = ?`).run(value, now(), id, key, version)
+      WHERE api_id = ? AND generation = ? AND row_key = ? AND version = ?`).run(value, now(), id, generation, key, version)
     if (changed.changes === 0) this.rowConflict(id, key)
     return { key, version: version + 1, remark: value }
   }
@@ -569,20 +706,23 @@ export class Apis {
   moveRow(id: number, key: string, position: number) {
     transaction(this.db, () => {
       if (this.get(id).mode !== 'SNAPSHOT') throw bad('只有定时同步模式的数据可以排序')
-      const keys = (this.db.prepare('SELECT row_key FROM api_row WHERE api_id = ? ORDER BY sort IS NULL, sort, position')
-        .all(id) as { row_key: string }[]).map(row => row.row_key)
+      this.assertIdle(id)
+      const generation = this.store.generation(id)
+      const keys = (this.db.prepare('SELECT row_key FROM api_row WHERE api_id = ? AND generation = ? ORDER BY sort IS NULL, sort, position')
+        .all(id, generation) as { row_key: string }[]).map(row => row.row_key)
       const from = keys.indexOf(key)
       if (from < 0) throw notFound('记录不存在')
       keys.splice(from, 1)
       keys.splice(Math.min(Math.max(position, 1), keys.length + 1) - 1, 0, key)
-      const update = this.db.prepare('UPDATE api_row SET sort = ? WHERE api_id = ? AND row_key = ?')
-      keys.forEach((rowKey, index) => update.run(index + 1, id, rowKey))
+      const update = this.db.prepare('UPDATE api_row SET sort = ? WHERE api_id = ? AND generation = ? AND row_key = ?')
+      keys.forEach((rowKey, index) => update.run(index + 1, id, generation, rowKey))
     })
   }
 
   resetSort(id: number) {
     if (this.get(id).mode !== 'SNAPSHOT') throw bad('只有定时同步模式的数据可以排序')
-    this.db.prepare('UPDATE api_row SET sort = NULL WHERE api_id = ?').run(id)
+    this.assertIdle(id)
+    this.db.prepare('UPDATE api_row SET sort = NULL WHERE api_id = ? AND generation = ?').run(id, this.store.generation(id))
   }
 
   /** A shared identity service can expose many fields; each API requires only what it uses. */
@@ -599,13 +739,16 @@ export class Apis {
   async query(api: Api, input: JsonObject, identity?: QueryIdentity): Promise<Row[]> {
     if (api.mode === 'XINGCHEN') throw bad('星辰模式请使用转发接口')
     if (api.auth === 'EXTERNAL' && !identity) throw forbidden('缺少已验证的身份')
-    return api.mode === 'REALTIME' ? this.realtime(api, input, { identity }) : this.local(api, input)
+    return api.mode === 'REALTIME' ? this.realtime(api, input, { identity }) : storedRows(await this.queryStored(api, input, identity))
   }
 
   async queryPage(api: Api, input: JsonObject, page: number, pageSize: number, identity?: QueryIdentity): Promise<PageResult> {
     if (api.mode === 'XINGCHEN') throw bad('星辰模式请使用转发接口')
     if (api.auth === 'EXTERNAL' && !identity) throw forbidden('缺少已验证的身份')
-    if (api.mode !== 'REALTIME') return this.localPage(api, input, page, pageSize)
+    if (api.mode !== 'REALTIME') {
+      const result = await this.queryStored(api, input, identity, page, pageSize)
+      return { rows: storedRows(result), total: result.total!, page, pageSize }
+    }
     const { sql, values, pool } = this.realtimeStatement(api, input, identity)
     const source = `(${sql}) AS databridge_source`
     // One snapshot for both, so the total matches the page even while the source changes.
@@ -657,51 +800,19 @@ export class Apis {
     return { sql, values, pool }
   }
 
-  /** Equality filters over stored rows, compared by field type ("1.50" matches 1.5; null matches null). */
-  private local(api: Api, input: JsonObject): Row[] {
-    const matches = this.localMatcher(api, input)
-    const rows: Row[] = []
-    const statement = this.db.prepare('SELECT data, remark FROM api_row WHERE api_id = ? ORDER BY sort IS NULL, sort, position')
-    for (const { data, remark } of statement.iterate(api.id) as Iterable<{ data: string; remark: string }>) {
-      const row = parse(data) as Row
-      if (!matches(row)) continue
-      if (rows.length === api.maxRows) throw new HttpError(422, `查询结果超过最大行数 ${api.maxRows}`)
-      rows.push(withRemark(row, remark))
-    }
-    return rows
-  }
-
-  private localPage(api: Api, input: JsonObject, page: number, pageSize: number): PageResult {
-    const matches = this.localMatcher(api, input)
-    const rows: Row[] = []
-    let total = 0
-    const offset = (page - 1) * pageSize
-    const statement = this.db.prepare('SELECT data, remark FROM api_row WHERE api_id = ? ORDER BY sort IS NULL, sort, position')
-    for (const { data, remark } of statement.iterate(api.id) as Iterable<{ data: string; remark: string }>) {
-      const row = parse(data) as Row
-      if (!matches(row)) continue
-      if (total >= offset && rows.length < pageSize) rows.push(withRemark(row, remark))
-      total++
-    }
-    return { rows, total, page, pageSize }
-  }
-
-  private localMatcher(api: Api, input: JsonObject): (row: Row) => boolean {
-    const filters = Object.keys(input).map(name => {
+  /**
+   * Equality filters over stored rows, compared by field type ("1.50" matches 1.5; null matches null).
+   * The row worker answers from the filter index and returns serialised rows, so open calls send them as stored.
+   */
+  async queryStored(api: Api, input: JsonObject, verified?: QueryIdentity, page?: number, pageSize?: number): Promise<OpenResult> {
+    if (api.mode !== 'SNAPSHOT' && api.mode !== 'MANUAL') throw bad('当前模式没有本地数据')
+    if (api.auth === 'EXTERNAL' && !verified) throw forbidden('缺少已验证的身份')
+    const filters: RowFilter[] = Object.keys(input).map(name => {
       const field = api.fields.find(f => f.name === name)
       if (!field || !api.filters.includes(name)) throw bad(`不支持按 ${name} 过滤`)
       const value = convertOptional(own(input, name), field)
-      return { field, want: value === null ? null : identity(value) }
+      return { name, field, key: value === null ? NULL_KEY : identity(value) }
     })
-    return (row: Row) => filters.every(({ field, want }) => {
-      const value = own(row, field.name)
-      if (want === null) return value === undefined || value === null
-      if (value === undefined || value === null) return false
-      try {
-        return identity(convertOptional(value, field)) === want
-      } catch {
-        return false
-      }
-    })
+    return this.store.open({ apiId: api.id, signature: filterSignature(api.fields, api.filters), filters, maxRows: api.maxRows, page, pageSize })
   }
 }

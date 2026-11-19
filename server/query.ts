@@ -3,6 +3,7 @@ import Cursor from 'pg-cursor'
 import { parse as parseArray } from 'postgres-array'
 import { HttpError } from './errors.ts'
 import { numberFromText, parse as parseJson, type Json } from './json.ts'
+import { pause } from './row-store.ts'
 
 // Result values are converted to JSON without losing precision or time zones:
 // int8/numeric keep exact digits, timestamps become ISO 8601, times keep fractions and offsets.
@@ -57,6 +58,18 @@ function sourceError(error: unknown): HttpError {
 export interface QueryResult { rows: Record<string, Json>[]; truncated: boolean; columns: string[] }
 
 export interface Statement { text: string; values: (string | null)[]; maxRows: number }
+interface RawResult { rows: Json[][]; truncated: boolean; columns: string[] }
+const READ_BATCH = 5000
+
+/** Rows as objects; a large result is converted in slices so that other requests are served in between. */
+async function objects(result: RawResult): Promise<QueryResult> {
+  const rows: Record<string, Json>[] = []
+  for (let start = 0; start < result.rows.length; start += 5000) {
+    if (start) await pause()
+    for (const row of result.rows.slice(start, start + 5000)) rows.push(Object.fromEntries(result.columns.map((name, i) => [name, row[i]])))
+  }
+  return { rows, truncated: result.truncated, columns: result.columns }
+}
 
 /** Runs one read-only statement and returns at most maxRows rows. */
 export async function runQuery(pool: pg.Pool, text: string, values: (string | null)[],
@@ -85,12 +98,11 @@ export async function runStatements(pool: pg.Pool, statements: Statement[], time
     work.catch(() => {})
     return Promise.race([work, deadline])
   }
+  const results: RawResult[] = []
   try {
     await bounded(client.query(statements.length > 1 ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN READ ONLY'))
     await bounded(client.query(`SET LOCAL statement_timeout = ${timeoutSeconds * 1000}`))
-    const results: QueryResult[] = []
     for (const statement of statements) results.push(await readStatement(client, statement, bounded))
-    return results
   } catch (error) {
     // PostgreSQL errors leave the connection usable; network failures and our deadline do not.
     const fromServer = /^[0-9A-Z]{5}$/.test(String((error as { code?: unknown }).code ?? ''))
@@ -101,21 +113,32 @@ export async function runStatements(pool: pg.Pool, statements: Statement[], time
     clearTimeout(timer)
     client.release(broken)
   }
+  // Converted after the connection is back in the pool.
+  const converted: QueryResult[] = []
+  for (const result of results) converted.push(await objects(result))
+  return converted
 }
 
 async function readStatement(client: pg.PoolClient, statement: Statement,
-                             bounded: <T>(work: Promise<T>) => Promise<T>): Promise<QueryResult> {
+                             bounded: <T>(work: Promise<T>) => Promise<T>): Promise<RawResult> {
   const cursor = client.query(new Cursor(statement.text, statement.values, { rowMode: 'array', types: typeParsers }))
-  const { rows, fields } = await bounded(new Promise<{ rows: Json[][]; fields: { name: string }[] }>((resolve, reject) =>
-    cursor.read(statement.maxRows + 1, (error, rows, result) =>
-      error ? reject(error) : resolve({ rows: rows as Json[][], fields: result.fields }))))
+  // Fetched in batches: asking for every row at once lets the server stream the whole result, which is then
+  // parsed in long bursts that hold up other requests.
+  const rows: Json[][] = []
+  let fields: { name: string }[] = []
+  for (const wanted = statement.maxRows + 1; rows.length < wanted;) {
+    const size = Math.min(READ_BATCH, wanted - rows.length)
+    const batch = await bounded(new Promise<Json[][]>((resolve, reject) => cursor.read(size, (error, batch, result) => {
+      if (error) return reject(error)
+      fields = result.fields
+      resolve(batch as Json[][])
+    })))
+    for (const row of batch) rows.push(row)
+    if (batch.length < size) break
+  }
   await bounded(cursor.close())
   const names = fields.map(field => field.name)
   const duplicate = names.find((name, index) => names.indexOf(name) !== index)
   if (duplicate) throw new HttpError(400, `查询结果包含重复的列名 ${duplicate}`)
-  return {
-    columns: names,
-    truncated: rows.length > statement.maxRows,
-    rows: rows.slice(0, statement.maxRows).map(row => Object.fromEntries(names.map((name, i) => [name, row[i]]))),
-  }
+  return { columns: names, truncated: rows.length > statement.maxRows, rows: rows.slice(0, statement.maxRows) }
 }
