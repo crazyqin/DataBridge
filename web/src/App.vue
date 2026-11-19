@@ -104,7 +104,7 @@ onMounted(async () => {
       </el-menu>
       <div class="sidebar-footer">
         <UserMenu :username="username" placement="top-start" @command="userCommand" />
-        <span>v1.8.0</span>
+        <span>v1.9.0</span>
       </div>
     </el-aside>
     <el-container>
